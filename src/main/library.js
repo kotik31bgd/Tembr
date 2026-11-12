@@ -56,6 +56,9 @@ class Library extends EventEmitter {
     }
     this.data.lyricsOverride ||= {};
     this.data.artistImages ||= {};
+    // Разделы SoundCloud и «Архив» убраны — удаляем их данные (в т.ч. сохранённые ключи)
+    delete this.data.scKeys;
+    delete this.data.scFavs;
     this.data.artistLookup ||= {};
     // v1.3: поиск текстов научился находить синхронные версии и Genius — перепроверим ненайденные и несинхронные
     if ((this.data.lyricsAlgo || 0) < 3) {

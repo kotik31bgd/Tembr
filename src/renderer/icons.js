@@ -45,7 +45,6 @@ const ICONS = {
   web: '<circle cx="12" cy="12" r="10"/><path d="M2 12h20"/><path d="M12 2a15 15 0 0 1 0 20a15 15 0 0 1 0-20"/>',
   paste: '<rect x="8" y="2" width="8" height="4" rx="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/>',
   arrowRight: '<path d="M5 12h14"/><path d="m13 6 6 6-6 6"/>',
-  cloud: '<path d="M17.5 19H8a6 6 0 1 1 5.3-8.8A4.5 4.5 0 1 1 17.5 19z"/>',
   globe: '<circle cx="12" cy="12" r="10"/><path d="M2 12h20"/><path d="M12 2a15 15 0 0 1 0 20a15 15 0 0 1 0-20"/>',
 };
 

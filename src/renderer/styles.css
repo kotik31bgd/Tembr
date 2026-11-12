@@ -509,38 +509,3 @@ kbd { font-family: inherit; font-size: 12px; background: var(--glass-2); border:
 .c-title .cv.nocover:hover { color: var(--accent); background-color: var(--accent-soft); }
 .pick-grid.round .pick img { border-radius: 50%; }
 .pick-grid.round .pick { text-align: center; }
-
-/* Internet Archive */
-.ia-desc { color: var(--text-2); font-size: 13px; margin: -4px 0 6px; max-width: 760px; line-height: 1.5; }
-.ia-about { font-size: 13px; color: var(--text-2); line-height: 1.6; white-space: pre-wrap; margin: 0 0 16px; max-height: 120px; overflow: auto; user-select: text; padding: 16px 20px; }
-.ia-list { padding: 6px; }
-.ia-row { display: grid; grid-template-columns: 44px minmax(0, 1fr) 64px 40px; align-items: center; gap: 12px; height: 54px; padding: 0 12px; border-radius: 12px; color: var(--text-2); cursor: default; }
-.ia-row:hover { background: var(--hover); }
-.ia-row .meta { min-width: 0; }
-.ia-row .t { color: var(--text); font-weight: 500; }
-.ia-row .a { font-size: 12px; margin-top: 2px; }
-.ia-row .c-num { text-align: center; font-variant-numeric: tabular-nums; color: var(--text-3); display: flex; justify-content: center; }
-.ia-row .c-num .ic { display: none; width: 16px; height: 16px; color: var(--text); }
-.ia-row:hover .c-num .n { display: none; }
-.ia-row:hover .c-num .ic.pl { display: block; }
-.ia-row.playing .c-num .n { display: none; }
-.ia-row.playing .c-num .bars { display: flex; }
-.ia-row.playing:hover .c-num .bars { display: none; }
-.ia-row.playing .t { color: var(--accent); }
-.ia-row [data-dl] { font-size: 11px; font-weight: 600; }
-
-/* SoundCloud */
-.sc-setup { max-width: 760px; line-height: 1.55; }
-.sc-setup ol { padding-left: 20px; color: var(--text-2); }
-.sc-setup li { margin-bottom: 6px; }
-.sc-setup .link { color: var(--accent); }
-.sc-keys { display: grid; grid-template-columns: 1fr 1fr auto; gap: 10px; margin: 16px 0 8px; }
-.sc-err { color: #e5484d; font-size: 13px; margin-top: 6px; }
-.hint-sm { color: var(--text-3); font-size: 12px; }
-.sc-row { grid-template-columns: 44px minmax(0, 1fr) 64px 76px; height: 60px; }
-.sc-main { display: flex; align-items: center; gap: 12px; min-width: 0; }
-.sc-main .cv { width: 42px; height: 42px; border-radius: 9px; flex: none; background: var(--glass-2) center/cover; display: flex; align-items: center; justify-content: center; color: var(--text-3); }
-.sc-main .cv .ic { width: 16px; height: 16px; }
-.sc-acts { display: flex; gap: 2px; justify-content: flex-end; }
-.badge-pv { font-size: 10px; font-weight: 700; padding: 2px 6px; border-radius: 5px; background: var(--accent-soft); color: var(--accent); margin-left: 6px; vertical-align: 2px; }
-.sc-attr { text-align: center; font-size: 12px; color: var(--text-3); margin: 16px 0; }
