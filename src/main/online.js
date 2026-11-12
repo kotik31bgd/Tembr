@@ -5,14 +5,16 @@ const UA = 'TembrPlayer/1.0 (desktop music player)';
 
 // Счётчик сетевых ошибок: «не нашли» и «не смогли спросить» — разные вещи, второе нельзя кэшировать
 let netErrors = 0;
+let lastNetError = '';
 async function getJson(url, timeoutMs = 12000) {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
     const res = await net.fetch(url, { headers: { 'User-Agent': UA, Accept: 'application/json' }, signal: ctrl.signal });
-    if (!res.ok) { if (res.status >= 500 || res.status === 429) netErrors++; return null; }
+    if (!res.ok) { lastNetError = 'HTTP ' + res.status; if (res.status >= 500 || res.status === 429) netErrors++; return null; }
     return await res.json();
-  } catch {
+  } catch (e) {
+    lastNetError = e && e.name === 'AbortError' ? 'нет ответа (таймаут)' : String((e && e.message) || e).replace(/^net::/, '');
     netErrors++;
     return null;
   } finally {
@@ -493,20 +495,25 @@ class CoverQueue {
 // ---------- Audius (открытый API, ключ не нужен) ----------
 // https://docs.audius.org — стриминг целиком разрешён; скачивание — только если его включил исполнитель
 const AUDIUS_APP = 'Tembr';
+// Основной адрес и запасные узлы: если один не открывается (блокировки, сбои), пробуем следующий
+const AUDIUS_HOSTS = process.env.TEMBR_AUDIUS_HOSTS ? process.env.TEMBR_AUDIUS_HOSTS.split(',') : ['https://api.audius.co', 'https://discoveryprovider.audius.co', 'https://discoveryprovider2.audius.co', 'https://discoveryprovider3.audius.co'];
 let audiusHost = null;
+let audiusError = '';
 async function auHost() {
-  if (audiusHost) return audiusHost;
-  const r = await getJson('https://api.audius.co', 8000);
-  const list = (r && Array.isArray(r.data) && r.data.length) ? r.data : ['https://api.audius.co'];
-  audiusHost = list[Math.floor(Math.random() * list.length)];
-  return audiusHost;
+  return audiusHost || AUDIUS_HOSTS[0];
 }
 async function auGet(path, params = {}) {
-  const host = await auHost();
   const q = new URLSearchParams({ ...params, app_name: AUDIUS_APP });
-  const r = await getJson(`${host}/v1${path}?${q}`, 15000);
-  if (!r) audiusHost = null; // в следующий раз попробуем другой узел
-  return r && r.data;
+  const order = audiusHost ? [audiusHost, ...AUDIUS_HOSTS.filter((h) => h !== audiusHost)] : AUDIUS_HOSTS;
+  const errors = [];
+  for (const host of order) {
+    const r = await getJson(`${host}/v1${path}?${q}`, 8000);
+    if (r && r.data !== undefined) { audiusHost = host; audiusError = ''; return r.data; }
+    errors.push(`${host.replace('https://', '')}: ${lastNetError || 'ошибка'}`);
+  }
+  audiusHost = null;
+  audiusError = errors.join('; ');
+  return null;
 }
 const auArt = (a, size = '480x480') => (a && (a[size] || a['1000x1000'] || a['480x480'] || a['150x150'])) || null;
 function auTrack(t, host) {
@@ -522,8 +529,8 @@ function auTrack(t, host) {
   };
 }
 async function auTracks(path, params) {
-  const host = await auHost();
   const d = await auGet(path, params);
+  const host = await auHost(); // узел, который реально ответил
   return Array.isArray(d) ? d.map((t) => auTrack(t, host)).filter(Boolean) : null;
 }
 async function audiusSearch(query) {
@@ -534,7 +541,7 @@ async function audiusSearch(query) {
     auGet('/users/search', { query: q, limit: '12' }),
     auGet('/playlists/search', { query: q, limit: '12' }),
   ]);
-  if (tracks === null && !users && !playlists) return null;
+  if (tracks === null && !users && !playlists) return { error: audiusError || 'нет связи' };
   return {
     tracks: tracks || [],
     users: (users || []).filter((u) => u.track_count > 0).map((u) => ({ id: u.id, name: u.name, handle: u.handle, photo: auArt(u.profile_picture), tracks: u.track_count, followers: u.follower_count || 0 })),

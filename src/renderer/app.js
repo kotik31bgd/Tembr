@@ -1718,7 +1718,15 @@ async function auSearchSection(view, q) {
   view.appendChild(sec);
   const r = await window.api.auSearch(q);
   if (!sec.isConnected || S.search.trim() !== q) return;
-  if (!r) { sec.innerHTML = `<div class="section-title"><span>Audius</span><small>сервис недоступен</small></div>`; return; }
+  if (!r || r.error) {
+    sec.innerHTML = `<div class="section-title"><span>Audius</span><small>нет связи</small></div>
+      <div class="glass-box au-err"><b>Не удалось подключиться к Audius.</b>
+      <p>Скорее всего, Audius недоступен из вашей сети. Если у вас есть VPN — включите его <b>для всей системы</b> (не только для браузера) и нажмите «Повторить».</p>
+      <button class="btn" data-retry>${icon('refresh')}Повторить</button>
+      <details><summary>Подробности ошибки</summary><code>${esc((r && r.error) || 'нет ответа')}</code></details></div>`;
+    sec.querySelector('[data-retry]').addEventListener('click', () => { sec.remove(); auSearchSection(view, q); });
+    return;
+  }
   const tracks = r.tracks.filter((t) => !S.tracks.has(t.id));
   if (!tracks.length && !r.users.length && !r.playlists.length) { sec.innerHTML = `<div class="section-title"><span>Audius</span><small>ничего не найдено</small></div>`; return; }
   sec.innerHTML = '';

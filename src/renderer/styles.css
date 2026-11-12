@@ -534,3 +534,6 @@ kbd { font-family: inherit; font-size: 12px; background: var(--glass-2); border:
 .au-section .section-title .ic { width: 18px; height: 18px; color: var(--accent); }
 .au-badge { font-size: 10px; font-weight: 700; letter-spacing: .4px; padding: 2px 6px; border-radius: 5px; background: var(--accent-soft); color: var(--accent); }
 .c-title .src-au { font-size: 9px; font-weight: 700; padding: 1px 5px; border-radius: 4px; background: var(--accent-soft); color: var(--accent); margin-left: 6px; vertical-align: 1px; }
+.au-err p { color: var(--text-2); font-size: 13px; line-height: 1.5; margin: 6px 0 12px; }
+.au-err details { margin-top: 12px; font-size: 12px; color: var(--text-3); }
+.au-err code { display: block; margin-top: 6px; white-space: pre-wrap; word-break: break-all; user-select: text; }
