@@ -1,24 +1,50 @@
 name: Сборка и релиз
 
+# Новая версия публикуется автоматически, когда в main меняется "version" в package.json.
 on:
   push:
-    tags: ['v*']
+    branches: [main]
   workflow_dispatch:
 
 permissions:
   contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
 
 jobs:
   release:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+
+      - name: Проверить, выпущена ли уже эта версия
+        id: ver
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          if gh release view "v$VERSION" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Версия v$VERSION уже опубликована — сборка не нужна."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - uses: actions/setup-node@v4
+        if: steps.ver.outputs.skip == 'false'
         with:
           node-version: 22
           cache: npm
+
       - run: npm ci
-      - name: Сборка установщика и публикация релиза
+        if: steps.ver.outputs.skip == 'false'
+
+      - name: Сборка установщика и публикация релиза v${{ steps.ver.outputs.version }}
+        if: steps.ver.outputs.skip == 'false'
         run: npm run release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
