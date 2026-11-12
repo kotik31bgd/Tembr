@@ -129,8 +129,8 @@ async function yandexTracks(q, limit = 10) {
 // ---------- Тексты песен ----------
 function cleanTitle(s) {
   return (s || '')
-    .replace(/\s*[\(\[][^\)\]]*(remaster|live|version|edit|mix|feat|ft\.|official|video|audio|lyrics|hq|hd)[^\)\]]*[\)\]]/gi, '')
-    .replace(/\s+(feat|ft)\.?\s.+$/i, '')
+    .replace(/\s*[\(\[][^\)\]]*(remaster|live|version|edit|mix|feat|ft\.|prod|official|video|audio|lyrics|hq|hd|explicit|clean)[^\)\]]*[\)\]]/gi, '')
+    .replace(/\s+(feat|ft|prod)\.?\s.+$/i, '')
     .trim();
 }
 
