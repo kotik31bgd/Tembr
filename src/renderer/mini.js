@@ -56,7 +56,8 @@ window.api.onState((s) => {
 });
 window.api.onSettings((s) => {
   document.documentElement.dataset.theme = s.theme === 'light' ? 'light' : 'dark';
-  document.documentElement.style.setProperty('--accent', s.accent || '#7c5cff');
+  const acc = (s.accent || '#7c5cff').toLowerCase() === '#ffffff' && s.theme === 'light' ? '#1c1f3b' : (s.accent || '#7c5cff');
+  document.documentElement.style.setProperty('--accent', acc);
 });
 render();
 requestAnimationFrame(tick);

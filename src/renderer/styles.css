@@ -5,6 +5,7 @@
   --accent: #5b6cff;
   --accent-2: color-mix(in srgb, var(--accent) 65%, #ff6fb5);
   --accent-soft: color-mix(in srgb, var(--accent) 16%, transparent);
+  --on-accent: #fff;
   --radius: 18px;
   --row-h: 52px;
   --player-h: 86px;
@@ -160,7 +161,7 @@ body.panel-closed #main { grid-column: 2 / 4; }
 .btn { display: inline-flex; align-items: center; gap: 8px; height: 40px; padding: 0 18px; border-radius: 12px; background: var(--glass-2); color: var(--text); font-weight: 500; transition: filter .15s, background .15s, transform .1s; white-space: nowrap; border: 1px solid var(--glass-border); }
 .btn:hover { background: var(--glass-strong); }
 .btn:active { transform: scale(.98); }
-.btn.primary { background: var(--accent); color: #fff; border-color: transparent; box-shadow: 0 6px 18px color-mix(in srgb, var(--accent) 40%, transparent); }
+.btn.primary { background: var(--accent); color: var(--on-accent); border-color: transparent; box-shadow: 0 6px 18px color-mix(in srgb, var(--accent) 40%, transparent); }
 .btn.primary:hover { filter: brightness(1.08); }
 .btn .ic { width: 17px; height: 17px; }
 .btn.round { border-radius: 999px; }
@@ -314,7 +315,7 @@ body.panel-closed #main { grid-column: 2 / 4; }
 .radio-filters { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 14px; align-items: center; }
 .chip { height: 34px; padding: 0 16px; border-radius: 999px; background: var(--glass); border: 1px solid var(--glass-border); color: var(--text-2); font-size: 13px; transition: all .15s; display: inline-flex; align-items: center; gap: 6px; backdrop-filter: blur(16px); }
 .chip:hover { color: var(--text); background: var(--glass-2); }
-.chip.active { background: var(--accent); color: #fff; border-color: transparent; }
+.chip.active { background: var(--accent); color: var(--on-accent); border-color: transparent; }
 .select { height: 36px; border-radius: 999px; background: var(--glass-2); border: 1px solid var(--glass-border); padding: 0 14px; color: var(--text); outline: 0; }
 .select option { background: var(--glass-strong); color: var(--text); }
 .input { height: 40px; border-radius: 12px; background: var(--glass-2); border: 1px solid var(--glass-border); padding: 0 14px; outline: 0; min-width: 0; color: var(--text); }
@@ -348,7 +349,7 @@ textarea.input { height: auto; padding: 12px 14px; resize: vertical; line-height
 .switch.on { background: var(--accent); }
 .switch.on::after { transform: translateX(18px); }
 .swatches { display: flex; gap: 8px; flex-wrap: wrap; }
-.swatch { width: 28px; height: 28px; border-radius: 50%; border: 2px solid transparent; }
+.swatch { width: 28px; height: 28px; border-radius: 50%; border: 2px solid transparent; box-shadow: inset 0 0 0 1px rgba(0, 0, 0, .15); }
 .swatch.on { border-color: var(--text); box-shadow: 0 0 0 2px var(--glass-strong) inset; }
 .seg { display: inline-flex; background: var(--glass-2); border-radius: 12px; padding: 3px; border: 1px solid var(--glass-border); }
 .seg button { padding: 7px 16px; border-radius: 9px; color: var(--text-2); font-size: 13px; }
@@ -426,7 +427,7 @@ kbd { font-family: inherit; font-size: 12px; background: var(--glass-2); border:
 .slider { flex: 1; height: 16px; position: relative; cursor: pointer; display: flex; align-items: center; }
 .slider::before { content: ""; position: absolute; left: 0; right: 0; height: 4px; border-radius: 4px; background: color-mix(in srgb, var(--text-3) 30%, transparent); }
 .slider-fill { position: absolute; left: 0; height: 4px; border-radius: 4px; background: var(--accent); width: 0; }
-.slider-thumb { position: absolute; width: 13px; height: 13px; border-radius: 50%; background: var(--accent); border: 2px solid #fff; transform: translateX(-50%); left: 0; opacity: 0; box-shadow: 0 1px 4px rgba(0, 0, 0, .3); transition: opacity .1s; }
+.slider-thumb { position: absolute; width: 13px; height: 13px; border-radius: 50%; background: var(--accent); border: 2px solid var(--play-bg); outline: 1px solid color-mix(in srgb, var(--text-3) 50%, transparent); transform: translateX(-50%); left: 0; opacity: 0; box-shadow: 0 1px 4px rgba(0, 0, 0, .3); transition: opacity .1s; }
 .slider:hover .slider-thumb, .slider.dragging .slider-thumb, .np-seek .slider-thumb { opacity: 1; }
 .slider.disabled { pointer-events: none; opacity: .4; }
 .right { display: flex; align-items: center; justify-content: flex-end; gap: 2px; }

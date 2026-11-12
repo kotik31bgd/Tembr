@@ -53,6 +53,24 @@ const UNKNOWN_ARTIST = 'Неизвестный исполнитель';
 const artistOf = (t) => t.artist || UNKNOWN_ARTIST;
 const primaryArtist = (t) => (t.artist ? t.artist.split(/\s+(?:feat\.?|ft\.?|featuring|при уч\.)\s+|\s*[,;&]\s*|\s+x\s+/i)[0].trim() || t.artist : UNKNOWN_ARTIST);
 const albumArtistOf = (t) => t.albumArtist || primaryArtist(t);
+// Несколько исполнителей в одной строке: «VILLIAN, madk1d», «A & B», «A feat. B», «A x B»
+const ARTIST_SEP = /(\s*(?:,|;|&|\s(?:feat\.?|ft\.?|featuring|при уч\.)\s|\sx\s)\s*)/i;
+function splitArtists(str) {
+  if (!str) return [];
+  const parts = String(str).split(ARTIST_SEP).filter((x, i) => i % 2 === 0).map((x) => x.trim()).filter(Boolean);
+  const seen = new Set();
+  return parts.filter((x) => !seen.has(x.toLowerCase()) && seen.add(x.toLowerCase()));
+}
+// Строка исполнителей, где каждый — отдельная ссылка (разделители сохраняются как в тегах)
+function artistLinks(str) {
+  if (!str) return esc(UNKNOWN_ARTIST);
+  return String(str).split(ARTIST_SEP).map((part, i) => {
+    if (i % 2 === 1) return esc(part);
+    const name = part.trim();
+    return name ? `<span class="link" data-artist="${esc(name.toLowerCase())}">${esc(name)}</span>` : '';
+  }).join('');
+}
+const trackArtistNames = (t) => { const n = splitArtists(t.artist); return n.length ? n : [UNKNOWN_ARTIST]; };
 const albumKey = (t) => (t.album ? `${albumArtistOf(t).toLowerCase()}|${t.album.toLowerCase()}` : null);
 
 // =====================================================================
@@ -94,8 +112,9 @@ function index() {
       if (!a.cover && t.cover) a.cover = t.cover;
       if (!a.year && t.year) a.year = t.year;
     }
-    for (const name of new Set([primaryArtist(t), t.albumArtist].filter(Boolean))) {
-      const nk = name.toLowerCase();
+    const names = new Map();
+    for (const n of [...trackArtistNames(t), ...splitArtists(t.albumArtist)]) if (!names.has(n.toLowerCase())) names.set(n.toLowerCase(), n);
+    for (const [nk, name] of names) {
       if (!artists.has(nk)) artists.set(nk, { key: nk, name, cover: null, ids: [] });
       const ar = artists.get(nk);
       ar.ids.push(t.id);
@@ -528,7 +547,7 @@ function updateNowPlaying() {
   if (c && c.kind === 'track') {
     const t = c.track;
     title = t.title;
-    artistHtml = `<span class="link" data-artist="${esc(primaryArtist(t).toLowerCase())}">${esc(artistOf(t))}</span>${t.album ? ` · <span class="link" data-album="${esc(albumKey(t))}">${esc(t.album)}</span>` : ''}`;
+    artistHtml = `${artistLinks(t.artist)}${t.album ? ` · <span class="link" data-album="${esc(albumKey(t))}">${esc(t.album)}</span>` : ''}`;
     coverUrl = t.cover ? fileUrl(t.cover) : null;
   } else if (c) {
     const st = c.station;
@@ -718,7 +737,7 @@ class TrackList {
       html += `<div class="trow${cls}" data-i="${i}" draggable="true" style="top:${i * ROW}px">
         <div class="c-num"><span class="n">${num}</span>${icon('play', 'pl')}<span class="bars"><span></span><span></span><span></span></span></div>
         <div class="c-title"><div class="cv${t.cover ? '' : ' nocover'}" style="${bg(t.cover)}" ${t.cover ? '' : 'title="Найти обложку"'}>${t.cover ? '' : icon('music')}</div><div class="meta"><span class="t ell" title="${esc(t.title)}">${esc(t.title)}</span></div></div>
-        <div class="ell"><span class="link" data-artist="${esc(primaryArtist(t).toLowerCase())}">${esc(artistOf(t))}</span></div>
+        <div class="ell">${artistLinks(t.artist)}</div>
         <div class="c-album ell">${ak ? `<span class="link" data-album="${esc(ak)}">${esc(t.album)}</span>` : '<span style="color:var(--text-3)">—</span>'}</div>
         <div class="c-like"><button class="${liked ? 'on' : ''}" data-like title="${liked ? 'Убрать из любимых' : 'В любимые'}">${icon(liked ? 'heartFill' : 'heart')}</button></div>
         <div class="c-dur">${fmtTime(t.duration)}</div></div>`;
@@ -871,7 +890,9 @@ function trackMenu(x, y, ids, list) {
   if (ids.length === 1) {
     items.push('-');
     if (albumKey(t)) items.push({ label: 'Перейти к альбому', icon: 'album', action: () => navigate({ name: 'album', key: albumKey(t) }) });
-    items.push({ label: 'Перейти к исполнителю', icon: 'artist', action: () => navigate({ name: 'artist', key: primaryArtist(t).toLowerCase() }) });
+    const names = trackArtistNames(t);
+    if (names.length > 1) items.push({ label: 'Перейти к исполнителю', icon: 'artist', sub: () => names.map((n) => ({ label: n, icon: 'artist', action: () => navigate({ name: 'artist', key: n.toLowerCase() }) })) });
+    else items.push({ label: 'Перейти к исполнителю', icon: 'artist', action: () => navigate({ name: 'artist', key: names[0].toLowerCase() }) });
     items.push({ label: 'Обложка', icon: 'image', sub: coverSubmenu(ids, `${primaryArtist(t)} ${t.title}`) });
     items.push({ label: 'Текст песни', icon: 'lyrics', sub: () => [
       { label: 'Найти текст…', icon: 'search', action: () => Lyrics.searchModal(t) },
@@ -1383,7 +1404,7 @@ const VIEWS = {
     const ids = sortedTracks(a.ids, 'album');
     view.insertAdjacentHTML('beforeend', head({
       kicker: 'Альбом', title: a.name, art: a.cover, artIcon: 'album', banner: a.cover || 'grad-6', editable: true,
-      sub: `<span class="link" data-artist="${esc(a.artist.toLowerCase())}">${esc(a.artist)}</span>${a.year ? ' · ' + a.year : ''} · ${summary(ids)}`,
+      sub: `${artistLinks(a.artist)}${a.year ? ' · ' + a.year : ''} · ${summary(ids)}`,
       actions: playActions('', true),
     }));
     bindPlayActions(view, ids);
@@ -1626,7 +1647,7 @@ function renderRadio(view) {
 // =====================================================================
 //  Настройки
 // =====================================================================
-const ACCENTS = ['#7c5cff', '#2d7cf6', '#1db97a', '#ff5c8a', '#ff8a3d', '#e5484d', '#00b3c7', '#c084fc'];
+const ACCENTS = ['#ffffff', '#7c5cff', '#2d7cf6', '#1db97a', '#ff5c8a', '#ff8a3d', '#e5484d', '#00b3c7', '#c084fc'];
 function renderSettings(view) {
   const st = S.settings;
   const sw = (key, on) => `<button class="switch${on ? ' on' : ''}" data-switch="${key}"></button>`;
@@ -1646,14 +1667,14 @@ function renderSettings(view) {
     </div>
     <div class="set-group">
       <h3>Интернет</h3>
-      <div class="set-row"><div class="l"><b>Искать обложки автоматически</b><small>Если у трека нет обложки, Tembr найдёт её в MusicBrainz / Cover Art Archive</small></div>${sw('autoCovers', st.autoCovers)}</div>
-      <div class="set-row"><div class="l"><b>Тексты песен</b><small>Загружаются из LRCLIB при открытии панели «Текст». Синхронные тексты подсвечиваются по ходу песни.</small></div></div>
+      <div class="set-row"><div class="l"><b>Искать обложки автоматически</b><small>Если у трека нет обложки, Tembr найдёт её по названию (Deezer, Яндекс Музыка, Apple Music, Genius, MusicBrainz). Клик по пустой обложке — выбрать вручную</small></div>${sw('autoCovers', st.autoCovers)}</div>
+      <div class="set-row"><div class="l"><b>Тексты песен</b><small>Загружаются из LRCLIB (с таймингами) и Genius при открытии панели «Текст». Свой текст можно вставить вручную.</small></div></div>
       <div class="set-row"><div class="l"><b>Повторить поиск</b><small>Сбросить кэш ненайденных обложек и текстов и поискать заново</small></div><button class="btn" id="s-cache">Сбросить</button></div>
     </div>
     <div class="set-group">
       <h3>Оформление</h3>
       <div class="set-row"><div class="l"><b>Тема</b></div><div class="seg"><button data-theme="dark" class="${st.theme !== 'light' ? 'on' : ''}">Тёмная</button><button data-theme="light" class="${st.theme === 'light' ? 'on' : ''}">Светлая</button></div></div>
-      <div class="set-row"><div class="l"><b>Акцентный цвет</b></div><div class="swatches">${ACCENTS.map((c) => `<button class="swatch${c === st.accent ? ' on' : ''}" data-accent="${c}" style="background:${c}"></button>`).join('')}</div></div>
+      <div class="set-row"><div class="l"><b>Акцентный цвет</b></div><div class="swatches">${ACCENTS.map((c) => `<button class="swatch${c === st.accent ? ' on' : ''}" data-accent="${c}" style="background:${c}" title="${c === '#ffffff' ? 'Белый (в светлой теме — чёрный)' : ''}"></button>`).join('')}</div></div>
     </div>
     <div class="set-group">
       <h3>Поведение</h3>
@@ -1705,9 +1726,26 @@ function renderSettings(view) {
   });
 }
 
+// Белый акцент: в тёмной теме белый, в светлой — почти чёрный (белое на светлом не видно)
+function effectiveAccent(accent, theme) {
+  const a = (accent || '#7c5cff').toLowerCase();
+  if (a === '#ffffff' && theme === 'light') return '#1c1f3b';
+  return a;
+}
+function isLightColor(hex) {
+  const m = /^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(hex || '');
+  if (!m) return false;
+  const [r, g, b] = [m[1], m[2], m[3]].map((x) => parseInt(x, 16));
+  return 0.299 * r + 0.587 * g + 0.114 * b > 170;
+}
 function applyTheme() {
-  document.documentElement.dataset.theme = S.settings.theme === 'light' ? 'light' : 'dark';
-  document.documentElement.style.setProperty('--accent', S.settings.accent || '#7c5cff');
+  const theme = S.settings.theme === 'light' ? 'light' : 'dark';
+  const acc = effectiveAccent(S.settings.accent, theme);
+  document.documentElement.dataset.theme = theme;
+  document.documentElement.style.setProperty('--accent', acc);
+  document.documentElement.style.setProperty('--on-accent', isLightColor(acc) ? '#111114' : '#ffffff');
+  document.documentElement.style.setProperty('--accent-2', acc === '#ffffff' ? '#9a9aa2' : acc === '#1c1f3b' ? '#55597a' : '');
+  if (!document.documentElement.style.getPropertyValue('--accent-2')) document.documentElement.style.removeProperty('--accent-2');
 }
 
 // =====================================================================
