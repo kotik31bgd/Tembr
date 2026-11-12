@@ -1,0 +1,36 @@
+const { contextBridge, ipcRenderer, webUtils } = require('electron');
+
+const on = (channel) => (cb) => {
+  const h = (_e, data) => cb(data);
+  ipcRenderer.on(channel, h);
+  return () => ipcRenderer.removeListener(channel, h);
+};
+
+contextBridge.exposeInMainWorld('api', {
+  init: () => ipcRenderer.invoke('lib:init'),
+  addFolder: () => ipcRenderer.invoke('lib:addFolder'),
+  addFiles: () => ipcRenderer.invoke('lib:addFiles'),
+  removeFolder: (f) => ipcRenderer.invoke('lib:removeFolder', f),
+  addPaths: (paths) => ipcRenderer.invoke('lib:addPaths', paths),
+  rescan: () => ipcRenderer.invoke('lib:rescan'),
+  store: (key, value) => ipcRenderer.send('store:set', key, value),
+  setSettings: (patch) => ipcRenderer.send('settings:set', patch),
+  lyrics: (t) => ipcRenderer.invoke('lyrics:get', t),
+  radioSearch: (q) => ipcRenderer.invoke('radio:search', q),
+  radioClick: (id) => ipcRenderer.send('radio:click', id),
+  showItem: (p) => ipcRenderer.send('shell:showItem', p),
+  openPath: (p) => ipcRenderer.send('shell:openPath', p),
+  openExternal: (u) => ipcRenderer.send('shell:openExternal', u),
+  clearCache: () => ipcRenderer.invoke('cache:clear'),
+  sendState: (st) => ipcRenderer.send('player:state', st),
+  command: (cmd, arg) => ipcRenderer.send('player:command', { cmd, arg }),
+  mini: (on) => ipcRenderer.send('win:mini', on),
+  quit: () => ipcRenderer.send('app:quit'),
+  pathForFile: (file) => webUtils.getPathForFile(file),
+  onTracks: on('lib:tracks'),
+  onProgress: on('lib:progress'),
+  onCommand: on('player:command'),
+  onState: on('player:state'),
+  onSettings: on('settings'),
+  onOpenFiles: on('open-files'),
+});

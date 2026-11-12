@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="ru" data-theme="dark">
+<head>
+  <meta charset="utf-8" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' tmedia: https: http: data:; style-src 'self' 'unsafe-inline'; script-src 'self'" />
+  <title>Tembr — мини-плеер</title>
+  <link rel="stylesheet" href="styles.css" />
+  <style>
+    html, body { background: transparent; }
+    .mini { position: fixed; inset: 6px; border-radius: 16px; background: var(--bg-2); border: 1px solid var(--line); box-shadow: 0 6px 20px rgba(0,0,0,.35); display: flex; align-items: center; gap: 12px; padding: 10px 12px; overflow: hidden; -webkit-app-region: drag; }
+    .mini .blur { position: absolute; inset: -20px; background-size: cover; background-position: center; filter: blur(30px) saturate(1.4); opacity: .35; z-index: 0; }
+    .mini > *:not(.blur) { position: relative; z-index: 1; }
+    .m-cover { width: 84px; height: 84px; border-radius: 10px; background: var(--bg-3) center/cover; flex: none; display: flex; align-items: center; justify-content: center; color: var(--text-3); }
+    .m-cover .ic { width: 30px; height: 30px; }
+    .m-body { flex: 1; min-width: 0; padding-right: 26px; display: flex; flex-direction: column; gap: 4px; }
+    .m-title { font-weight: 600; font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .m-artist { font-size: 12px; color: var(--text-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .m-controls { display: flex; align-items: center; gap: 2px; margin-top: 2px; -webkit-app-region: no-drag; }
+    .m-controls .play-btn { width: 34px; height: 34px; }
+    .m-controls .play-btn .ic { width: 16px; height: 16px; }
+    .m-controls .icon-btn { width: 30px; height: 30px; }
+    .m-controls .icon-btn .ic { width: 17px; height: 17px; }
+    .m-bar { height: 3px; background: var(--bg-hover); border-radius: 3px; overflow: hidden; -webkit-app-region: no-drag; cursor: pointer; margin-top: 2px; }
+    .m-bar div { height: 100%; background: var(--accent); width: 0; }
+    .m-top { position: absolute; top: 6px; right: 8px; display: flex; gap: 2px; z-index: 2; -webkit-app-region: no-drag; }
+    .m-top .icon-btn { width: 24px; height: 24px; border-radius: 6px; }
+    .m-top .icon-btn .ic { width: 14px; height: 14px; }
+    .like.on { color: var(--accent); }
+  </style>
+</head>
+<body>
+  <div class="mini">
+    <div class="blur" id="blur"></div>
+    <div class="m-cover" id="cover"></div>
+    <div class="m-body">
+      <div class="m-title" id="title">Ничего не играет</div>
+      <div class="m-artist" id="artist">Tembr</div>
+      <div class="m-bar" id="bar"><div></div></div>
+      <div class="m-controls">
+        <button class="icon-btn like" id="like" title="В любимые"></button>
+        <button class="icon-btn" id="prev" title="Предыдущий"></button>
+        <button class="play-btn" id="play" title="Играть / пауза"></button>
+        <button class="icon-btn" id="next" title="Следующий"></button>
+      </div>
+    </div>
+    <div class="m-top">
+      <button class="icon-btn" id="expand" title="Развернуть"></button>
+    </div>
+  </div>
+  <script src="icons.js"></script>
+  <script src="mini.js"></script>
+</body>
+</html>

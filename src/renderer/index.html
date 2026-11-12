@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="ru" data-theme="dark">
+<head>
+  <meta charset="utf-8" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' tmedia: https: http: data:; media-src 'self' tmedia: https: http: blob:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self' tmedia:" />
+  <title>Tembr</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div id="app">
+    <aside id="sidebar">
+      <div class="brand drag">
+        <img class="logo" src="../../assets/icon.png" alt="" />
+        <span>Tembr</span>
+      </div>
+      <nav id="nav"></nav>
+      <div class="sidebar-bottom">
+        <button class="nav-item" data-view="settings"><i data-icon="settings"></i><span>Настройки</span></button>
+      </div>
+    </aside>
+
+    <main id="main">
+      <header id="topbar" class="drag">
+        <div class="nav-btns no-drag">
+          <button class="icon-btn" id="btn-back" title="Назад"><i data-icon="back"></i></button>
+        </div>
+        <div class="search no-drag">
+          <i data-icon="search"></i>
+          <input id="search" type="text" placeholder="Поиск по трекам, исполнителям, альбомам…  (Ctrl+F)" spellcheck="false" />
+          <button class="icon-btn small" id="search-clear" title="Очистить"><i data-icon="close"></i></button>
+        </div>
+        <div class="scan-status no-drag" id="scan-status"></div>
+      </header>
+      <section id="view"></section>
+    </main>
+
+    <aside id="panel" class="hidden">
+      <div class="panel-tabs">
+        <button data-panel="lyrics" class="active">Текст</button>
+        <button data-panel="queue">Очередь</button>
+        <button class="icon-btn small" id="panel-close" title="Закрыть"><i data-icon="close"></i></button>
+      </div>
+      <div id="panel-body"></div>
+    </aside>
+
+    <footer id="player">
+      <div class="now">
+        <div class="now-cover" id="now-cover"></div>
+        <div class="now-meta">
+          <div class="now-title" id="now-title">Ничего не играет</div>
+          <div class="now-artist" id="now-artist">Выберите трек</div>
+        </div>
+        <button class="icon-btn like" id="btn-like" title="В любимые"><i data-icon="heart"></i></button>
+      </div>
+      <div class="center">
+        <div class="controls">
+          <button class="icon-btn" id="btn-shuffle" title="Перемешать (S)"><i data-icon="shuffle"></i></button>
+          <button class="icon-btn" id="btn-prev" title="Предыдущий (Ctrl+←)"><i data-icon="prev"></i></button>
+          <button class="play-btn" id="btn-play" title="Играть / пауза (Пробел)"><i data-icon="play"></i></button>
+          <button class="icon-btn" id="btn-next" title="Следующий (Ctrl+→)"><i data-icon="next"></i></button>
+          <button class="icon-btn" id="btn-repeat" title="Повтор (R)"><i data-icon="repeat"></i></button>
+        </div>
+        <div class="progress-row">
+          <span class="time" id="time-cur">0:00</span>
+          <div class="slider" id="seek"><div class="slider-fill"></div><div class="slider-thumb"></div></div>
+          <span class="time" id="time-dur">0:00</span>
+        </div>
+      </div>
+      <div class="right">
+        <button class="icon-btn" id="btn-lyrics" title="Текст песни (Ctrl+L)"><i data-icon="lyrics"></i></button>
+        <button class="icon-btn" id="btn-queue" title="Очередь (Ctrl+Q)"><i data-icon="queue"></i></button>
+        <button class="icon-btn" id="btn-eq" title="Эквалайзер (Ctrl+E)"><i data-icon="eq"></i></button>
+        <button class="icon-btn" id="btn-mini" title="Мини-плеер (Ctrl+M)"><i data-icon="mini"></i></button>
+        <button class="icon-btn" id="btn-mute" title="Звук (M)"><i data-icon="volume"></i></button>
+        <div class="slider volume" id="volume"><div class="slider-fill"></div><div class="slider-thumb"></div></div>
+      </div>
+    </footer>
+  </div>
+
+  <div id="ctx-menu" class="ctx hidden"></div>
+  <div id="modal-root"></div>
+  <div id="toast-root"></div>
+  <div id="drop-overlay" class="hidden"><div><i data-icon="add"></i><p>Отпустите, чтобы добавить музыку</p><small>Папки будут отслеживаться автоматически</small></div></div>
+
+  <script src="icons.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

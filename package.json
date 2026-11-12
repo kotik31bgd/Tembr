@@ -1,0 +1,80 @@
+{
+  "name": "tembr",
+  "productName": "Tembr",
+  "version": "1.0.0",
+  "description": "Музыкальный плеер для Windows",
+  "main": "src/main/main.js",
+  "author": "Tembr",
+  "license": "MIT",
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder --win --x64 --publish never"
+  },
+  "dependencies": {
+    "chokidar": "3.6.0",
+    "music-metadata": "11.2.3"
+  },
+  "devDependencies": {
+    "electron": "33.2.1",
+    "electron-builder": "25.1.8"
+  },
+  "build": {
+    "appId": "com.tembr.player",
+    "productName": "Tembr",
+    "files": [
+      "src/**/*",
+      "assets/**/*",
+      "package.json"
+    ],
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "build/icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "installerIcon": "build/icon.ico",
+      "uninstallerIcon": "build/icon.ico",
+      "shortcutName": "Tembr",
+      "artifactName": "Tembr-Setup-${version}.exe"
+    },
+    "portable": {
+      "artifactName": "Tembr-Portable-${version}.exe"
+    },
+    "fileAssociations": [
+      {
+        "ext": [
+          "mp3",
+          "flac",
+          "m4a",
+          "ogg",
+          "opus",
+          "wav",
+          "aac",
+          "wma"
+        ],
+        "name": "Audio",
+        "description": "Аудиофайл"
+      }
+    ],
+    "publish": null
+  }
+}
