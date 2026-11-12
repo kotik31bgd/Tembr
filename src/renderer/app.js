@@ -8,7 +8,7 @@ const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => Array.from(r.querySelectorAll(s));
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const fileUrl = (p) => 'tmedia://file/' + encodeURIComponent(p).replace(/['()*!]/g, (c) => '%' + c.charCodeAt(0).toString(16).toUpperCase());
-const bg = (p) => (p ? `background-image:url('${fileUrl(p)}')` : '');
+const bg = (p) => (p ? (/^https?:/.test(p) ? `background-image:url('${String(p).replace(/'/g, '%27')}')` : `background-image:url('${fileUrl(p)}')`) : '');
 const collator = new Intl.Collator('ru', { numeric: true, sensitivity: 'base' });
 const cmp = (a, b) => collator.compare(a || '', b || '');
 const uid = () => Math.random().toString(36).slice(2, 10) + Date.now().toString(36).slice(-4);
@@ -82,6 +82,9 @@ const S = {
   playlists: [],
   stats: {},
   radioFavs: [],
+  online: new Map(), // треки из Internet Archive: id 'ia:<запись>/<файл>'
+  archive: { cat: 'free', sort: 'downloads', query: '', page: 1, items: null, total: 0, loading: false },
+  iaItems: new Map(),
   artistImages: {},
   settings: {},
   dataDir: '',
@@ -226,7 +229,7 @@ const Player = {
   entry(id) { return { uid: uid(), id }; },
 
   playList(ids, start = 0, opts = {}) {
-    ids = ids.filter((id) => S.tracks.has(id) || id.startsWith('r:'));
+    ids = ids.filter((id) => S.tracks.has(id) || id.startsWith('r:') || S.online.has(id));
     if (!ids.length) return;
     if (opts.shuffle !== undefined && opts.shuffle !== S.settings.shuffle) setSetting({ shuffle: opts.shuffle });
     this.base = ids.map((id) => this.entry(id));
@@ -319,6 +322,11 @@ const Player = {
       if (!st) return;
       this.current = { kind: 'radio', id: e.id, station: st };
       audio.src = st.url;
+    } else if (e.id.startsWith('ia:')) {
+      const o = S.online.get(e.id);
+      if (!o) return;
+      this.current = { kind: 'online', id: e.id, track: o };
+      audio.src = o.url;
     } else {
       const t = S.tracks.get(e.id);
       if (!t) { // файл исчез из библиотеки — пропускаем
@@ -432,16 +440,16 @@ const Player = {
   },
 
   persist: debounce(function () {
-    const q = Player.queue.filter((e) => !e.id.startsWith('r:'));
+    const q = Player.queue.filter((e) => !e.id.startsWith('r:') && !e.id.startsWith('ia:'));
     const cur = Player.queue[Player.index];
-    if (!cur || cur.id.startsWith('r:')) return;
+    if (!cur || cur.id.startsWith('r:') || cur.id.startsWith('ia:')) return;
     const start = Math.max(0, q.indexOf(cur) - 200);
     const slice = q.slice(start, start + 1000);
     setSetting({
       lastTrack: {
         ids: slice.map((e) => e.id),
         index: slice.indexOf(cur),
-        base: S.settings.shuffle ? Player.base.filter((e) => !e.id.startsWith('r:')).slice(0, 1000).map((e) => e.id) : null,
+        base: S.settings.shuffle ? Player.base.filter((e) => !e.id.startsWith('r:') && !e.id.startsWith('ia:')).slice(0, 1000).map((e) => e.id) : null,
         time: Math.floor(audio.currentTime || 0),
       },
     });
@@ -477,6 +485,7 @@ const Player = {
       repeat: S.settings.repeat,
       track: c ? (c.kind === 'track'
         ? { id: c.id, title: c.track.title, artist: artistOf(c.track), cover: c.track.cover ? fileUrl(c.track.cover) : null }
+        : c.kind === 'online' ? { id: c.id, title: c.track.title, artist: c.track.artist, cover: c.track.cover }
         : { id: c.id, title: c.station.name, artist: 'Интернет-радио', cover: c.station.favicon || null }) : null,
     });
   },
@@ -521,7 +530,7 @@ function updateMediaSession() {
   if (!('mediaSession' in navigator)) return;
   const c = Player.current;
   if (!c) return;
-  const meta = c.kind === 'track'
+  const meta = c.kind === 'track' || c.kind === 'online'
     ? { title: c.track.title, artist: artistOf(c.track), album: c.track.album || '' }
     : { title: c.station.name, artist: 'Интернет-радио', album: '' };
   try { navigator.mediaSession.metadata = new MediaMetadata(meta); } catch {}
@@ -555,6 +564,11 @@ function updateNowPlaying() {
     title = t.title;
     artistHtml = `${artistLinks(t.artist)}${t.album ? ` · <span class="link" data-album="${esc(albumKey(t))}">${esc(t.album)}</span>` : ''}`;
     coverUrl = t.cover ? fileUrl(t.cover) : null;
+  } else if (c && c.kind === 'online') {
+    const t = c.track;
+    title = t.title;
+    artistHtml = `${esc(t.artist)} · <span class="link" data-ia="${esc(t.iaId)}">${esc(t.album)}</span>`;
+    coverUrl = t.cover;
   } else if (c) {
     const st = c.station;
     title = st.name;
@@ -576,6 +590,7 @@ function updateNowPlaying() {
     b.innerHTML = icon(liked ? 'heartFill' : 'heart');
   }
   setAmbient(c && !contain ? coverUrl : null);
+  markIaPlaying();
   if (!c) return;
   updateMediaSession();
   updateControls();
@@ -840,6 +855,8 @@ window.addEventListener('resize', () => currentList?.refresh());
 document.addEventListener('click', (e) => {
   const a = e.target.closest('[data-artist]');
   if (a && a.classList.contains('link')) return navigate({ name: 'artist', key: a.dataset.artist });
+  const ia = e.target.closest('[data-ia]');
+  if (ia && ia.classList.contains('link')) return navigate({ name: 'archiveItem', key: ia.dataset.ia });
   const al = e.target.closest('[data-album]');
   if (al && al.classList.contains('link')) return navigate({ name: 'album', key: al.dataset.album });
 });
@@ -1029,6 +1046,7 @@ function renderNav() {
     ${item({ name: 'playlists' }, 'playlist', 'Плейлисты', v === 'playlists')}
     ${item({ name: 'liked' }, 'heart', 'Избранное', v === 'liked', liked)}
     ${item({ name: 'radio' }, 'radio', 'Радио', v === 'radio')}
+    ${item({ name: 'archive' }, 'globe', 'Архив', v === 'archive' || v === 'archiveItem')}
     ${item({ name: 'settings' }, 'settings', 'Настройки', v === 'settings')}
     <div class="nav-title">Ваши плейлисты <button id="nav-new-pl" title="Новый плейлист">${icon('add')}</button></div>
     ${S.playlists.map((p) => item({ name: 'playlist', id: p.id }, 'playlist', p.name, v === 'playlist' && S.view.id === p.id, p.ids.filter((id) => S.tracks.has(id)).length, ' small')).join('')}
@@ -1113,7 +1131,7 @@ function render(keepScroll) {
   view.innerHTML = '';
   $('#btn-back').disabled = !S.history.length;
   const v = S.view;
-  if (S.search.trim() && !['settings', 'radio'].includes(v.name)) renderSearch(view);
+  if (S.search.trim() && !['settings', 'radio', 'archive'].includes(v.name)) renderSearch(view);
   else {
     const fn = VIEWS[v.name] || VIEWS.home;
     fn(view, v);
@@ -1471,6 +1489,8 @@ const VIEWS = {
   },
 
   radio(view) { renderRadio(view); },
+  archive(view) { renderArchive(view); },
+  archiveItem(view, v) { renderArchiveItem(view, v.key); },
   settings(view) { renderSettings(view); },
 };
 
@@ -1595,7 +1615,7 @@ const onSearch = debounce(() => { S.selected.clear(); render(false); }, 180);
 $('#search').addEventListener('input', (e) => {
   S.search = e.target.value;
   $('.search').classList.toggle('has-text', !!S.search);
-  if (S.view.name === 'settings' || S.view.name === 'radio') {
+  if (S.view.name === 'settings' || S.view.name === 'radio' || S.view.name === 'archive') {
     if (S.search.trim()) { S.history.push({ view: S.view, scroll: 0 }); S.view = { name: 'tracks' }; renderNav(); }
   }
   onSearch();
@@ -1683,6 +1703,162 @@ function renderRadio(view) {
   $('#r-country').addEventListener('change', (e) => { R.country = e.target.value; R.results = null; load(); });
   if (R.results === null) load(); else draw();
 }
+
+// =====================================================================
+//  Internet Archive
+// =====================================================================
+const IA_CATEGORIES = [
+  ['free', 'Свободная музыка', 'Независимые музыканты и нетлейблы под лицензиями Creative Commons — можно слушать и скачивать бесплатно.'],
+  ['live', 'Живые концерты', 'Записи концертов групп, которые разрешают их распространять (Grateful Dead, Phish и тысячи других).'],
+  ['old', 'Старые записи', 'Граммофонные пластинки 1890–1923 годов — общественное достояние: блюз, джаз, опера, оркестры.'],
+  ['classic', 'Классика', 'Записи Musopen: Бах, Шопен, Бетховен и другие — общественное достояние.'],
+];
+
+function renderArchive(view) {
+  const A = S.archive;
+  const cat = IA_CATEGORIES.find((c) => c[0] === A.cat) || IA_CATEGORIES[0];
+  view.insertAdjacentHTML('beforeend', head({ kicker: 'Онлайн · archive.org', title: 'Internet Archive', sub: 'Музыка, которую можно законно слушать и скачивать бесплатно: свободные лицензии и общественное достояние', art: null, artClass: 'grad-3', artIcon: 'globe', banner: 'grad-3' }));
+  const wrap = document.createElement('div');
+  wrap.innerHTML = `
+    <div class="radio-filters">
+      <input class="input" id="ia-q" placeholder="Поиск по архиву (лучше на английском)…" value="${esc(A.query)}" style="width:320px" spellcheck="false"/>
+      <div class="seg"><button data-sort="downloads" class="${A.sort !== 'new' ? 'on' : ''}">Популярное</button><button data-sort="new" class="${A.sort === 'new' ? 'on' : ''}">Новое</button></div>
+    </div>
+    <div class="radio-filters">${IA_CATEGORIES.map(([k, n]) => `<button class="chip${k === A.cat ? ' active' : ''}" data-cat="${k}">${n}</button>`).join('')}</div>
+    <div class="ia-desc">${esc(cat[2])}</div>
+    <div id="ia-res"></div>`;
+  view.appendChild(wrap);
+  const res = wrap.querySelector('#ia-res');
+  const draw = () => {
+    if (A.items === false) { res.innerHTML = '<div class="empty" style="padding:30px"><p>Не удалось загрузить архив. Проверьте подключение к интернету.</p><button class="btn" id="ia-retry">Повторить</button></div>'; res.querySelector('#ia-retry').onclick = () => load(1); return; }
+    if (!A.items) { res.innerHTML = '<div class="scan-status" style="padding:20px 0"><div class="spinner"></div>Загружаю…</div>'; return; }
+    if (!A.items.length) { res.innerHTML = '<div class="empty" style="padding:30px"><p>Ничего не найдено. Попробуйте другой запрос — архив лучше понимает английский.</p></div>'; return; }
+    const items = A.items.map((x) => ({
+      title: x.title, sub: [x.creator, x.year].filter(Boolean).join(' · '), cover: x.cover, icon: 'globe',
+      open: () => navigate({ name: 'archiveItem', key: x.id }),
+      play: () => playArchive(x.id, 0),
+    }));
+    res.innerHTML = `<div class="section-title"><span>${esc(cat[1])}</span><small>${A.total.toLocaleString('ru')} записей</small></div><div class="grid">${items.map(cardHtml).join('')}</div>${A.items.length < A.total ? `<div style="text-align:center;margin:24px 0"><button class="btn" id="ia-more">${A.loading ? 'Загружаю…' : 'Показать ещё'}</button></div>` : ''}`;
+    bindCards(res, items);
+    res.querySelector('#ia-more')?.addEventListener('click', () => !A.loading && load(A.page + 1));
+  };
+  const load = async (page) => {
+    A.loading = true;
+    if (page === 1) A.items = null;
+    draw();
+    const key = JSON.stringify([A.cat, A.query, A.sort, page]);
+    A.key = key;
+    const r = await window.api.iaSearch({ category: A.cat, query: A.query, page, sort: A.sort });
+    if (A.key !== key) return;
+    A.loading = false;
+    if (!r) { if (page === 1) A.items = false; }
+    else { A.items = page === 1 ? r.items : [...(A.items || []), ...r.items]; A.total = r.total; A.page = page; }
+    if (S.view.name === 'archive') draw();
+  };
+  wrap.addEventListener('click', (e) => {
+    const c = e.target.closest('[data-cat]');
+    if (c) { A.cat = c.dataset.cat; A.items = null; return render(false); }
+    const so = e.target.closest('[data-sort]');
+    if (so) { A.sort = so.dataset.sort; A.items = null; return render(false); }
+  });
+  const q = wrap.querySelector('#ia-q');
+  q.addEventListener('keydown', (e) => { if (e.key === 'Enter') { A.query = q.value.trim(); load(1); } });
+  q.addEventListener('input', debounce(() => { if (q.value.trim() !== A.query) { A.query = q.value.trim(); load(1); } }, 700));
+  if (A.items === null || A.items === undefined) load(1); else draw();
+}
+
+async function loadIaItem(id) {
+  let it = S.iaItems.get(id);
+  if (!it) {
+    it = await window.api.iaItem(id);
+    if (!it) return null;
+    S.iaItems.set(id, it);
+  }
+  for (const t of it.tracks) S.online.set(t.id, t);
+  return it;
+}
+async function playArchive(id, start, shuffle) {
+  const it = await loadIaItem(id);
+  if (!it || !it.tracks.length) return toast('В этой записи нет аудиофайлов');
+  Player.playList(it.tracks.map((t) => t.id), start, shuffle ? { shuffle: true, randomStart: true } : { shuffle: false });
+}
+function markIaPlaying() {
+  const id = Player.current?.id;
+  $$('.ia-row').forEach((r) => r.classList.toggle('playing', r.dataset.id === id));
+}
+const fmtSize = (b) => (b > 1048576 ? (b / 1048576).toFixed(b > 104857600 ? 0 : 1) + ' МБ' : Math.max(1, Math.round(b / 1024)) + ' КБ');
+
+async function renderArchiveItem(view, id) {
+  view.innerHTML = '<div class="panel-empty" style="padding:80px"><div class="spinner" style="margin:0 auto 14px"></div>Загружаю запись из архива…</div>';
+  const it = await loadIaItem(id);
+  if (!(S.view.name === 'archiveItem' && S.view.key === id)) return;
+  view.innerHTML = '';
+  if (!it) return (view.innerHTML = '<div class="empty"><h2>Не удалось загрузить запись</h2><p>Проверьте подключение к интернету и попробуйте ещё раз.</p></div>');
+  const total = it.tracks.reduce((a, t) => a + (t.duration || 0), 0);
+  const size = it.tracks.reduce((a, t) => a + (t.size || 0), 0);
+  const lic = it.license ? (/publicdomain/.test(it.license) ? 'общественное достояние' : /creativecommons/.test(it.license) ? 'лицензия Creative Commons' : 'лицензия') : '';
+  view.insertAdjacentHTML('beforeend', head({
+    kicker: 'Internet Archive', title: it.title, art: it.cover, banner: it.cover,
+    sub: `${esc([it.creator, it.year].filter(Boolean).join(' · '))}${it.tracks.length ? ' · ' + tracksWord(it.tracks.length) + (total ? ' · ' + fmtTotal(total) : '') : ''}${lic ? ` · <span class="link" data-ext="${esc(it.license)}">${lic}</span>` : ''}`,
+    actions: (it.tracks.length ? playActions(`<button class="btn ghost-light round" id="ia-dl-all">${icon('folder')}Скачать в библиотеку${size ? ' · ' + fmtSize(size) : ''}</button>`, true) : '') + `<button class="circle-btn ghost-light" id="ia-page" title="Открыть на archive.org">${icon('web')}</button>`,
+  }));
+  view.querySelector('[data-act="play"]')?.addEventListener('click', () => playArchive(id, 0));
+  view.querySelector('[data-act="shuffle"]')?.addEventListener('click', () => playArchive(id, 0, true));
+  view.querySelector('#ia-page').addEventListener('click', () => window.api.openExternal(it.page));
+  view.querySelector('[data-ext]')?.addEventListener('click', (e) => window.api.openExternal(e.currentTarget.dataset.ext.replace(/^http:/, 'https:')));
+  view.querySelector('#ia-dl-all')?.addEventListener('click', () => {
+    confirmBox('Скачать всю запись?', `${tracksWord(it.tracks.length)}${size ? ', около ' + fmtSize(size) : ''} будут сохранены в папку «Internet Archive» внутри вашей папки с музыкой и появятся в библиотеке.`, 'Скачать', () => downloadIa(it.tracks));
+  });
+  if (it.description) view.insertAdjacentHTML('beforeend', `<div class="ia-about glass-box">${esc(it.description)}</div>`);
+  if (!it.tracks.length) return view.insertAdjacentHTML('beforeend', '<div class="empty"><p>В этой записи нет аудиофайлов, которые можно воспроизвести.</p></div>');
+  const list = document.createElement('div');
+  list.className = 'tlist ia-list';
+  list.innerHTML = it.tracks.map((t, i) => `<div class="ia-row" data-i="${i}" data-id="${esc(t.id)}">
+      <div class="c-num"><span class="n">${t.trackNo || i + 1}</span>${icon('play', 'pl')}<span class="bars"><span></span><span></span><span></span></span></div>
+      <div class="meta"><div class="t ell" title="${esc(t.title)}">${esc(t.title)}</div><div class="a ell">${esc(t.artist)}</div></div>
+      <div class="c-dur">${t.duration ? fmtTime(t.duration) : ''}</div>
+      <button class="icon-btn small" data-dl title="Скачать в библиотеку${t.size ? ' · ' + fmtSize(t.size) : ''}">${icon('add')}</button>
+    </div>`).join('');
+  view.appendChild(list);
+  markIaPlaying();
+  list.addEventListener('click', (e) => {
+    const row = e.target.closest('.ia-row');
+    if (!row) return;
+    const i = +row.dataset.i;
+    if (e.target.closest('[data-dl]')) return downloadIa([it.tracks[i]]);
+    if (Player.current?.id === row.dataset.id) return Player.toggle();
+    playArchive(id, i);
+  });
+  list.addEventListener('contextmenu', (e) => {
+    const row = e.target.closest('.ia-row');
+    if (!row) return;
+    e.preventDefault();
+    const t = it.tracks[+row.dataset.i];
+    openMenu(e.clientX, e.clientY, [
+      { label: 'Воспроизвести', icon: 'play', action: () => playArchive(id, +row.dataset.i) },
+      { label: 'Играть следующим', icon: 'next', action: () => Player.playNext([t.id]) },
+      { label: 'Добавить в очередь', icon: 'queue', action: () => Player.addToQueue([t.id]) },
+      '-',
+      { label: 'Скачать в библиотеку', icon: 'folder', action: () => downloadIa([t]) },
+    ]);
+  });
+}
+
+async function downloadIa(tracks) {
+  toast(tracks.length > 1 ? `Скачиваю ${tracksWord(tracks.length)}…` : `Скачиваю «${tracks[0].title}»…`);
+  const r = await window.api.iaDownload(tracks.map((t) => ({ id: t.id, url: t.url, name: t.name, artist: t.artist, album: t.album })));
+  if (r.saved.length) toast(`Сохранено в библиотеку: ${tracksWord(r.saved.length)}`);
+  if (r.saved.length < tracks.length) toast(`Не удалось скачать: ${tracksWord(tracks.length - r.saved.length)}`);
+  S.folders = (await window.api.init()).folders;
+}
+window.api.onIaProgress((p) => {
+  const row = $$('.ia-row').find((r) => r.dataset.id === p.id);
+  const btn = row && row.querySelector('[data-dl]');
+  if (!btn) return;
+  if (p.error) { btn.innerHTML = icon('close'); btn.title = 'Ошибка: ' + p.error; return; }
+  if (p.finished) { btn.innerHTML = icon('check'); btn.classList.add('active'); btn.title = 'Сохранено в библиотеку'; return; }
+  if (p.total) btn.textContent = Math.floor((p.done / p.total) * 100) + '%';
+});
 
 // =====================================================================
 //  Настройки
@@ -2190,6 +2366,11 @@ $('#panel-body').addEventListener('click', (e) => {
 });
 
 function qItemHtml(e, qi, current) {
+  if (e.id.startsWith('ia:')) {
+    const t = S.online.get(e.id);
+    if (!t) return '';
+    return `<div class="q-item${current ? ' current' : ''}" data-qi="${qi}" draggable="${!current}"><div class="cv" style="background-image:url('${esc(t.cover)}')"></div><div class="meta"><div class="t ell">${esc(t.title)}</div><div class="a ell">${esc(t.artist)} · Архив</div></div>${current ? '' : `<button class="icon-btn small rm" data-rm title="Убрать из очереди">${icon('close')}</button>`}</div>`;
+  }
   if (e.id.startsWith('r:')) {
     const st = S.stations.get(e.id);
     return `<div class="q-item${current ? ' current' : ''}" data-qi="${qi}"><div class="cv">${icon('radio')}</div><div class="meta"><div class="t ell">${esc(st?.name)}</div><div class="a ell">Интернет-радио</div></div></div>`;
@@ -2278,6 +2459,7 @@ $('#now-cover').addEventListener('click', () => {
   if (c?.kind === 'track' && !c.track.cover) return coverPicker([c.id], `${primaryArtist(c.track)} ${c.track.title}`, c.track.title);
   if (c?.kind === 'track' && albumKey(c.track)) navigate({ name: 'album', key: albumKey(c.track) });
   else if (c?.kind === 'radio') navigate({ name: 'radio' });
+  else if (c?.kind === 'online') navigate({ name: 'archiveItem', key: c.track.iaId });
 });
 bindSlider($('#seek'), (f) => { seeking = true; const d = audio.duration; if (isFinite(d)) $('#time-cur').textContent = fmtTime(f * d); }, (f) => { seeking = false; const d = audio.duration; if (isFinite(d)) Player.seek(f * d); });
 bindSlider($('#volume'), (f) => Player.setVolume(f), (f) => Player.setVolume(f));

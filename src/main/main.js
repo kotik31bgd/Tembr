@@ -359,6 +359,33 @@ function setupIpc() {
   });
 
   ipcMain.handle('radio:search', (_e, q) => online.radioSearch(q));
+
+  // ---------- Internet Archive ----------
+  ipcMain.handle('ia:search', (_e, q) => online.iaSearch(q || {}));
+  ipcMain.handle('ia:item', (_e, id) => online.iaItem(String(id || '')));
+  // Скачать треки в папку библиотеки: <первая папка>/Internet Archive/<запись>/<файл>
+  ipcMain.handle('ia:download', async (_e, list) => {
+    const clean = (x) => String(x || '').replace(/[<>:"\/\\|?*\x00-\x1f]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 120) || 'Без названия';
+    let root = lib.data.folders.find((f) => fs.existsSync(f));
+    if (!root) {
+      root = app.getPath('music');
+      await lib.addFolder(root);
+    }
+    const saved = [];
+    for (const t of list || []) {
+      try {
+        const dir = path.join(root, 'Internet Archive', clean(`${t.artist && t.artist !== t.album ? t.artist + ' - ' : ''}${t.album}`));
+        await fs.promises.mkdir(dir, { recursive: true });
+        const dest = path.join(dir, clean(path.basename(t.name)));
+        if (!fs.existsSync(dest)) await online.iaDownload(t.url, dest, (d, total) => broadcast('ia:progress', { id: t.id, done: d, total }));
+        saved.push(dest);
+        broadcast('ia:progress', { id: t.id, done: 1, total: 1, finished: true });
+      } catch (e) {
+        broadcast('ia:progress', { id: t.id, error: String(e.message || e) });
+      }
+    }
+    return { saved, folder: root };
+  });
   ipcMain.on('radio:click', (_e, id) => online.radioClick(id));
 
   ipcMain.on('shell:showItem', (_e, p) => shell.showItemInFolder(p));

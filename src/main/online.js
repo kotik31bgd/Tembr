@@ -490,6 +490,102 @@ class CoverQueue {
   }
 }
 
+// ---------- Internet Archive (archive.org) ----------
+// Только законные коллекции: Creative Commons, разрешённые записи концертов, общественное достояние
+const IA_CATS = {
+  free: 'collection:netlabels AND mediatype:audio AND licenseurl:*creativecommons*',
+  live: 'collection:etree AND mediatype:etree',
+  old: 'collection:78rpm AND year:[1890 TO 1923] AND NOT title:(192* OR 193*)', // с запасом: записи до 1926 г. в США — общественное достояние
+  classic: 'musopen AND mediatype:audio',
+};
+const iaStr = (v) => (Array.isArray(v) ? v[0] : v) || '';
+async function iaSearch({ category = 'free', query = '', page = 1, sort = 'downloads' }) {
+  const base = IA_CATS[category] || IA_CATS.free;
+  const clean = String(query || '').replace(/[()"\[\]{}:\\]/g, ' ').trim();
+  const q = clean ? `(${base}) AND (${clean})` : base;
+  const params = new URLSearchParams({ q, rows: '48', page: String(page), output: 'json' });
+  for (const f of ['identifier', 'title', 'creator', 'year', 'downloads']) params.append('fl[]', f);
+  params.append('sort[]', sort === 'new' ? 'addeddate desc' : 'downloads desc');
+  const r = await getJson('https://archive.org/advancedsearch.php?' + params, 20000);
+  if (!r || !r.response) return null;
+  return {
+    total: r.response.numFound || 0,
+    items: (r.response.docs || []).map((d) => ({
+      id: d.identifier, title: iaStr(d.title) || d.identifier, creator: iaStr(d.creator), year: d.year || '', downloads: d.downloads || 0,
+      cover: `https://archive.org/services/img/${encodeURIComponent(d.identifier)}`,
+    })),
+  };
+}
+function iaLength(v) {
+  if (v == null) return 0;
+  const sv = String(v);
+  if (sv.includes(':')) return sv.split(':').reduce((acc, x) => acc * 60 + (parseFloat(x) || 0), 0);
+  return parseFloat(sv) || 0;
+}
+const IA_FORMATS = ['VBR MP3', 'MP3', '320Kbps MP3', '256Kbps MP3', '128Kbps MP3', '64Kbps MP3', 'Ogg Vorbis', 'Flac', '24bit Flac'];
+async function iaItem(id) {
+  const d = await getJson('https://archive.org/metadata/' + encodeURIComponent(id), 20000);
+  if (!d || !d.metadata) return null;
+  const m = d.metadata;
+  const title = iaStr(m.title) || id;
+  const creator = iaStr(m.creator);
+  // Группируем файлы одного трека (mp3/ogg/flac) и берём самый удобный формат
+  const groups = new Map();
+  for (const f of d.files || []) {
+    const fmtRank = IA_FORMATS.indexOf(f.format);
+    if (fmtRank < 0) continue;
+    const base = f.name.replace(/\.[^.\/]+$/, '').replace(/_(vbr|64kb|128kb)$/i, '');
+    const g = groups.get(base) || { files: [], title: '', artist: '', track: 0, length: 0 };
+    g.files.push({ f, rank: fmtRank });
+    g.title ||= f.title || '';
+    g.artist ||= f.artist || f.creator || '';
+    g.track ||= parseInt(String(f.track || '').split('/')[0], 10) || 0;
+    g.length ||= iaLength(f.length);
+    groups.set(base, g);
+  }
+  const tracks = [];
+  for (const [base, g] of groups) {
+    const best = g.files.sort((a, b) => a.rank - b.rank)[0].f;
+    const nice = base.split('/').pop().replace(/^\d{1,3}[\s._-]+/, '').replace(/[_]+/g, ' ').trim();
+    tracks.push({
+      id: `ia:${id}/${best.name}`, iaId: id, name: best.name,
+      title: g.title || nice || best.name, artist: g.artist || creator || 'Неизвестный исполнитель', album: title,
+      duration: g.length, trackNo: g.track, size: parseInt(best.size, 10) || 0, format: best.format,
+      url: `https://archive.org/download/${encodeURIComponent(id)}/${best.name.split('/').map(encodeURIComponent).join('/')}`,
+      cover: `https://archive.org/services/img/${encodeURIComponent(id)}`,
+    });
+  }
+  tracks.sort((a, b) => (a.trackNo || 999) - (b.trackNo || 999) || a.name.localeCompare(b.name, undefined, { numeric: true }));
+  const desc = iaStr(m.description).replace(/<br\s*\/?>/gi, '\n').replace(/<[^>]+>/g, '').replace(/\n{3,}/g, '\n\n').trim();
+  return {
+    id, title, creator, year: ((iaStr(m.year) || iaStr(m.date).slice(0, 4)).replace(/^0+$/, '')), description: decodeEntities(desc).slice(0, 600),
+    license: iaStr(m.licenseurl), cover: `https://archive.org/services/img/${encodeURIComponent(id)}`,
+    page: `https://archive.org/details/${encodeURIComponent(id)}`, tracks: tracks.slice(0, 400),
+  };
+}
+// Скачивание файла из архива (для «Сохранить в библиотеку»)
+async function iaDownload(url, dest, onProgress) {
+  if (!/^https:\/\/archive\.org\/download\//.test(url)) throw new Error('bad url');
+  const res = await net.fetch(url, { headers: { 'User-Agent': UA } });
+  if (!res.ok || !res.body) throw new Error('HTTP ' + res.status);
+  const total = parseInt(res.headers.get('content-length') || '0', 10);
+  const fs = require('fs');
+  const tmp = dest + '.part';
+  const out = fs.createWriteStream(tmp);
+  let done = 0;
+  const reader = res.body.getReader();
+  for (;;) {
+    const { done: end, value } = await reader.read();
+    if (end) break;
+    done += value.length;
+    if (!out.write(Buffer.from(value))) await new Promise((r) => out.once('drain', r));
+    onProgress && onProgress(done, total);
+  }
+  await new Promise((r, j) => out.end((e) => (e ? j(e) : r())));
+  fs.renameSync(tmp, dest);
+  return dest;
+}
+
 // ---------- Интернет-радио ----------
 const RADIO_HOSTS = ['de1.api.radio-browser.info', 'de2.api.radio-browser.info', 'fi1.api.radio-browser.info', 'nl1.api.radio-browser.info', 'at1.api.radio-browser.info'];
 let radioHost = null;
@@ -525,4 +621,4 @@ async function radioClick(id) {
   if (radioHost && id) getJson(`https://${radioHost}/json/url/${id}`, 5000);
 }
 
-module.exports = { artistImageSearch, findArtistImage, lyrics, lyricsSearch, geniusLyrics, parseGeniusLyrics, CoverQueue, findCover, coverSearch, fetchImage, radioSearch, radioClick, sim, artistSim };
+module.exports = { iaSearch, iaItem, iaDownload, artistImageSearch, findArtistImage, lyrics, lyricsSearch, geniusLyrics, parseGeniusLyrics, CoverQueue, findCover, coverSearch, fetchImage, radioSearch, radioClick, sim, artistSim };
