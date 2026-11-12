@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="ru" data-theme="dark">
+<html lang="ru" data-theme="light">
 <head>
   <meta charset="utf-8" />
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' tmedia: https: http: data:; media-src 'self' tmedia: https: http: blob:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self' tmedia:" />
@@ -7,44 +7,77 @@
   <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
+  <!-- Фон: размытая обложка текущего трека поверх мягкого градиента -->
+  <div id="ambient">
+    <div class="amb-base"></div>
+    <div class="amb-art" id="amb-a"></div>
+    <div class="amb-art" id="amb-b"></div>
+    <div class="amb-veil"></div>
+  </div>
+
   <div id="app">
-    <aside id="sidebar">
+    <aside id="sidebar" class="glass">
       <div class="brand drag">
         <img class="logo" src="../../assets/icon.png" alt="" />
         <span>Tembr</span>
       </div>
       <nav id="nav"></nav>
-      <div class="sidebar-bottom">
-        <button class="nav-item" data-view="settings"><i data-icon="settings"></i><span>Настройки</span></button>
+      <div class="side-now" id="side-now" title="Сейчас играет">
+        <div class="side-cover" id="side-cover"></div>
+        <canvas id="viz" width="150" height="40"></canvas>
       </div>
     </aside>
 
+    <header id="topbar" class="drag">
+      <div class="nav-btns no-drag">
+        <button class="icon-btn" id="btn-back" title="Назад"><i data-icon="back"></i></button>
+      </div>
+      <div class="search no-drag">
+        <i data-icon="search"></i>
+        <input id="search" type="text" placeholder="Поиск музыки, исполнителей, альбомов…" spellcheck="false" />
+        <button class="icon-btn small" id="search-clear" title="Очистить"><i data-icon="close"></i></button>
+      </div>
+      <div class="scan-status no-drag" id="scan-status"></div>
+      <button class="btn primary round no-drag hidden" id="update-btn" title="Перезапустить и установить обновление"></button>
+    </header>
+
     <main id="main">
-      <header id="topbar" class="drag">
-        <div class="nav-btns no-drag">
-          <button class="icon-btn" id="btn-back" title="Назад"><i data-icon="back"></i></button>
-        </div>
-        <div class="search no-drag">
-          <i data-icon="search"></i>
-          <input id="search" type="text" placeholder="Поиск по трекам, исполнителям, альбомам…  (Ctrl+F)" spellcheck="false" />
-          <button class="icon-btn small" id="search-clear" title="Очистить"><i data-icon="close"></i></button>
-        </div>
-        <div class="scan-status no-drag" id="scan-status"></div>
-        <button class="btn primary round no-drag hidden" id="update-btn" title="Перезапустить и установить обновление"></button>
-      </header>
       <section id="view"></section>
     </main>
 
-    <aside id="panel" class="hidden">
+    <aside id="panel" class="glass">
+      <div class="np-card">
+        <div class="np-head">
+          <span>Сейчас играет</span>
+          <button class="icon-btn small" id="panel-close" title="Скрыть панель"><i data-icon="close"></i></button>
+        </div>
+        <div class="np-row">
+          <div class="np-cover" id="np-cover"></div>
+          <div class="np-meta">
+            <div class="np-title" id="np-title">Ничего не играет</div>
+            <div class="np-artist" id="np-artist">Выберите трек</div>
+          </div>
+          <button class="icon-btn like" id="np-like" title="В любимые"><i data-icon="heart"></i></button>
+        </div>
+        <div class="slider np-seek" id="np-seek"><div class="slider-fill"></div><div class="slider-thumb"></div></div>
+        <div class="np-times"><span id="np-cur">0:00</span><span id="np-dur">0:00</span></div>
+        <div class="np-controls">
+          <button class="icon-btn" id="np-shuffle" title="Перемешать"><i data-icon="shuffle"></i></button>
+          <button class="icon-btn" id="np-prev" title="Предыдущий"><i data-icon="prev"></i></button>
+          <button class="play-btn big" id="np-play" title="Играть / пауза"><i data-icon="play"></i></button>
+          <button class="icon-btn" id="np-next" title="Следующий"><i data-icon="next"></i></button>
+          <button class="icon-btn" id="np-repeat" title="Повтор"><i data-icon="repeat"></i></button>
+        </div>
+      </div>
       <div class="panel-tabs">
-        <button data-panel="lyrics" class="active">Текст</button>
+        <button data-panel="similar" class="active">Похожие</button>
+        <button data-panel="lyrics">Текст</button>
         <button data-panel="queue">Очередь</button>
-        <button class="icon-btn small" id="panel-close" title="Закрыть"><i data-icon="close"></i></button>
       </div>
       <div id="panel-body"></div>
     </aside>
 
-    <footer id="player">
+    <footer id="player" class="glass">
       <div class="now">
         <div class="now-cover" id="now-cover"></div>
         <div class="now-meta">
@@ -72,6 +105,7 @@
         <button class="icon-btn" id="btn-queue" title="Очередь (Ctrl+Q)"><i data-icon="queue"></i></button>
         <button class="icon-btn" id="btn-eq" title="Эквалайзер (Ctrl+E)"><i data-icon="eq"></i></button>
         <button class="icon-btn" id="btn-mini" title="Мини-плеер (Ctrl+M)"><i data-icon="mini"></i></button>
+        <button class="icon-btn" id="btn-panel" title="Панель «Сейчас играет» (Ctrl+P)"><i data-icon="panel"></i></button>
         <button class="icon-btn" id="btn-mute" title="Звук (M)"><i data-icon="volume"></i></button>
         <div class="slider volume" id="volume"><div class="slider-fill"></div><div class="slider-thumb"></div></div>
       </div>

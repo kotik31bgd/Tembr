@@ -67,7 +67,7 @@ const S = {
   settings: {},
   dataDir: '',
   version: '',
-  view: { name: 'tracks' },
+  view: { name: 'home' },
   history: [],
   search: '',
   sort: null,
@@ -154,6 +154,7 @@ audio.preload = 'auto';
 
 const Player = {
   ctx: null,
+  analyser: null,
   filters: [],
   preamp: null,
   base: [], // очередь в исходном порядке: [{uid, id}]
@@ -178,7 +179,11 @@ const Player = {
         node = node.connect(b);
         return b;
       });
-      node.connect(this.ctx.destination);
+      this.analyser = this.ctx.createAnalyser();
+      this.analyser.fftSize = 512;
+      this.analyser.smoothingTimeConstant = 0.75;
+      node.connect(this.analyser);
+      this.analyser.connect(this.ctx.destination);
       this.applyEq();
     } catch (e) {
       console.error('Web Audio init failed', e);
@@ -308,6 +313,7 @@ const Player = {
     updateNowPlaying();
     currentList?.refresh();
     renderQueuePanel();
+    renderSimilar();
     Lyrics.onTrack();
     this.persist();
     this.sendState(true);
@@ -507,58 +513,85 @@ if ('mediaSession' in navigator) {
 // =====================================================================
 //  Панель плеера
 // =====================================================================
+function setCoverEl(el, url, fallbackIcon, contain) {
+  el.style.backgroundImage = url ? `url('${url}')` : '';
+  el.style.backgroundSize = url && contain ? 'contain' : '';
+  el.style.backgroundRepeat = 'no-repeat';
+  el.innerHTML = url ? '' : icon(fallbackIcon);
+}
+
 function updateNowPlaying() {
   const c = Player.current;
-  const cover = $('#now-cover');
   const like = $('#btn-like');
-  if (!c) {
-    $('#now-title').textContent = 'Ничего не играет';
-    $('#now-artist').textContent = 'Выберите трек';
-    cover.style.backgroundImage = '';
-    cover.innerHTML = icon('music');
-    like.classList.add('hidden');
-    return;
-  }
-  if (c.kind === 'track') {
+  const npLike = $('#np-like');
+  let title = 'Ничего не играет', artistHtml = 'Выберите трек', coverUrl = null, contain = false, fb = 'music';
+  if (c && c.kind === 'track') {
     const t = c.track;
-    $('#now-title').textContent = t.title;
-    $('#now-title').title = t.title;
-    $('#now-artist').innerHTML = `<span class="link" data-artist="${esc(primaryArtist(t).toLowerCase())}">${esc(artistOf(t))}</span>${t.album ? ` · <span class="link" data-album="${esc(albumKey(t))}">${esc(t.album)}</span>` : ''}`;
-    cover.style.backgroundImage = t.cover ? `url('${fileUrl(t.cover)}')` : '';
-    cover.innerHTML = t.cover ? '' : icon('music');
-    like.classList.remove('hidden');
-    const liked = isLiked(t.id);
-    like.classList.toggle('on', liked);
-    like.innerHTML = icon(liked ? 'heartFill' : 'heart');
-  } else {
+    title = t.title;
+    artistHtml = `<span class="link" data-artist="${esc(primaryArtist(t).toLowerCase())}">${esc(artistOf(t))}</span>${t.album ? ` · <span class="link" data-album="${esc(albumKey(t))}">${esc(t.album)}</span>` : ''}`;
+    coverUrl = t.cover ? fileUrl(t.cover) : null;
+  } else if (c) {
     const st = c.station;
-    $('#now-title').textContent = st.name;
-    $('#now-artist').innerHTML = `<span class="live">LIVE</span> ${esc([st.country, st.tags.slice(0, 2).join(', ')].filter(Boolean).join(' · '))}`;
-    cover.style.backgroundImage = st.favicon ? `url('${st.favicon.replace(/'/g, '%27')}')` : '';
-    cover.style.backgroundSize = st.favicon ? 'contain' : '';
-    cover.innerHTML = st.favicon ? '' : icon('radio');
-    like.classList.add('hidden');
+    title = st.name;
+    artistHtml = `<span class="live">LIVE</span> ${esc([st.country, st.tags.slice(0, 2).join(', ')].filter(Boolean).join(' · '))}`;
+    coverUrl = st.favicon ? st.favicon.replace(/'/g, '%27') : null;
+    contain = true;
+    fb = 'radio';
   }
-  if (c.kind === 'track') cover.style.backgroundSize = '';
+  for (const id of ['#now-title', '#np-title']) { $(id).textContent = title; $(id).title = title; }
+  $('#now-artist').innerHTML = artistHtml;
+  $('#np-artist').innerHTML = artistHtml;
+  setCoverEl($('#now-cover'), coverUrl, fb, contain);
+  setCoverEl($('#np-cover'), coverUrl, fb, contain);
+  setCoverEl($('#side-cover'), coverUrl, fb, contain);
+  const isTrack = c?.kind === 'track';
+  const liked = isTrack && isLiked(c.id);
+  for (const b of [like, npLike]) {
+    b.classList.toggle('hidden', !isTrack);
+    b.classList.toggle('on', !!liked);
+    b.innerHTML = icon(liked ? 'heartFill' : 'heart');
+  }
+  setAmbient(c && !contain ? coverUrl : null);
+  if (!c) return;
   updateMediaSession();
   updateControls();
   updateProgress();
 }
 
+// Фон окна — размытая обложка текущего трека (плавная смена)
+let ambUrl = undefined, ambFlip = false;
+function setAmbient(url) {
+  if (url === ambUrl) return;
+  ambUrl = url;
+  const [show, hide] = ambFlip ? [$('#amb-a'), $('#amb-b')] : [$('#amb-b'), $('#amb-a')];
+  ambFlip = !ambFlip;
+  hide.classList.remove('show');
+  if (!url) return;
+  const img = new Image();
+  img.onload = () => { if (ambUrl !== url) return; show.style.backgroundImage = `url('${url}')`; show.classList.add('show'); };
+  img.src = url;
+}
+
 function updateControls() {
   const playing = !audio.paused;
   $('#btn-play').innerHTML = icon(playing ? 'pause' : 'play');
+  $('#np-play').innerHTML = icon(playing ? 'pause' : 'play');
   document.body.classList.toggle('paused', !playing);
-  $('#btn-shuffle').classList.toggle('active', !!S.settings.shuffle);
   const r = S.settings.repeat;
-  $('#btn-repeat').classList.toggle('active', r !== 'off');
-  $('#btn-repeat').innerHTML = icon(r === 'one' ? 'repeatOne' : 'repeat');
+  for (const id of ['#btn-shuffle', '#np-shuffle']) $(id).classList.toggle('active', !!S.settings.shuffle);
+  for (const id of ['#btn-repeat', '#np-repeat']) {
+    $(id).classList.toggle('active', r !== 'off');
+    $(id).innerHTML = icon(r === 'one' ? 'repeatOne' : 'repeat');
+  }
   const live = Player.current?.kind === 'radio';
   $('#seek').classList.toggle('disabled', live || !Player.current);
+  $('#np-seek').classList.toggle('disabled', live || !Player.current);
   $('#btn-lyrics').classList.toggle('active', S.panel === 'lyrics');
   $('#btn-queue').classList.toggle('active', S.panel === 'queue');
+  $('#btn-panel').classList.toggle('active', !!S.panel);
   $('#btn-eq').classList.toggle('active', !!S.settings.eq.enabled);
   if ('mediaSession' in navigator) navigator.mediaSession.playbackState = playing ? 'playing' : 'paused';
+  Viz.toggle(playing);
 }
 
 let seeking = false;
@@ -566,10 +599,72 @@ function updateProgress() {
   const live = Player.current?.kind === 'radio';
   const d = audio.duration;
   const cur = audio.currentTime || 0;
+  const durText = live ? '∞' : fmtTime(isFinite(d) ? d : Player.current?.track?.duration || 0);
   $('#time-cur').textContent = fmtTime(cur);
-  $('#time-dur').textContent = live ? '∞' : fmtTime(isFinite(d) ? d : Player.current?.track?.duration || 0);
-  if (!seeking) setSlider($('#seek'), live ? 0 : isFinite(d) && d > 0 ? cur / d : 0);
+  $('#time-dur').textContent = durText;
+  $('#np-cur').textContent = fmtTime(cur);
+  $('#np-dur').textContent = durText;
+  if (!seeking) {
+    const f = live ? 0 : isFinite(d) && d > 0 ? cur / d : 0;
+    setSlider($('#seek'), f);
+    setSlider($('#np-seek'), f);
+  }
 }
+
+// Визуализатор в боковом меню (по реальному звуку через Web Audio)
+const Viz = {
+  raf: 0,
+  data: null,
+  toggle(on) {
+    if (on && !this.raf) this.raf = requestAnimationFrame(() => this.draw());
+    if (!on && this.raf) { cancelAnimationFrame(this.raf); this.raf = 0; this.drawIdle(); }
+  },
+  colors() {
+    const cs = getComputedStyle(document.documentElement);
+    return { a: cs.getPropertyValue('--accent').trim() || '#5b6cff', b: cs.getPropertyValue('--text-3').trim() || '#999' };
+  },
+  bars(levels, color) {
+    const cv = $('#viz');
+    const w = cv.clientWidth, h = cv.clientHeight;
+    if (cv.width !== w * 2) { cv.width = w * 2; cv.height = h * 2; }
+    const g = cv.getContext('2d');
+    g.setTransform(2, 0, 0, 2, 0, 0);
+    g.clearRect(0, 0, w, h);
+    const n = levels.length, gap = 3, bw = Math.max(2, (w - gap * (n - 1)) / n);
+    g.fillStyle = color;
+    levels.forEach((v, i) => {
+      const bh = Math.max(3, v * (h - 4));
+      const x = i * (bw + gap), y = (h - bh) / 2;
+      g.beginPath();
+      g.roundRect(x, y, bw, bh, bw / 2);
+      g.fill();
+    });
+  },
+  drawIdle() {
+    const n = 16;
+    this.bars(Array.from({ length: n }, (_, i) => 0.22 + 0.22 * Math.abs(Math.sin(i * 1.7))), this.colors().b);
+  },
+  draw() {
+    this.raf = requestAnimationFrame(() => this.draw());
+    const an = Player.analyser;
+    const n = 16;
+    let levels;
+    if (an) {
+      this.data ||= new Uint8Array(an.frequencyBinCount);
+      an.getByteFrequencyData(this.data);
+      levels = Array.from({ length: n }, (_, i) => {
+        const from = Math.floor(Math.pow(i / n, 1.6) * this.data.length * 0.7);
+        const to = Math.max(from + 1, Math.floor(Math.pow((i + 1) / n, 1.6) * this.data.length * 0.7));
+        let sum = 0; for (let k = from; k < to; k++) sum += this.data[k];
+        return Math.max(0.12, Math.min(1, sum / (to - from) / 200));
+      });
+    } else {
+      const t = performance.now() / 300;
+      levels = Array.from({ length: n }, (_, i) => 0.3 + 0.3 * Math.abs(Math.sin(t + i)));
+    }
+    this.bars(levels, this.colors().a);
+  },
+};
 
 function setSlider(el, frac) {
   const p = clamp(frac, 0, 1) * 100 + '%';
@@ -639,7 +734,7 @@ class TrackList {
     this.el.className = 'tlist' + (opts.noAlbum ? ' no-album' : '');
     const s = S.sort;
     const h = (key, label) => `<div class="sortable ${s && s.key === key ? 'sorted' : ''}" data-sort="${key}">${label}${s && s.key === key ? (s.dir > 0 ? ' ↑' : ' ↓') : ''}</div>`;
-    this.el.innerHTML = `<div class="thead"><div style="text-align:center">#</div>${h('title', 'Название')}${h('artist', 'Исполнитель')}<div class="c-album">${h('album', 'Альбом')}</div><div></div><div style="text-align:right">${h('duration', '⏱')}</div></div><div class="tbody"></div>`;
+    this.el.innerHTML = `<div class="thead"><div style="text-align:center">#</div>${h('title', 'Название')}${h('artist', 'Исполнитель')}<div class="c-album">${h('album', 'Альбом')}</div><div></div><div style="text-align:right">${h('duration', icon('clock'))}</div></div><div class="tbody"></div>`;
     this.body = this.el.querySelector('.tbody');
     this.body.style.height = this.ids.length * ROW + 'px';
     host.appendChild(this.el);
@@ -827,10 +922,16 @@ function trackMenu(x, y, ids, list) {
     { label: 'Добавить в плейлист', icon: 'playlist', sub: playlistSubmenu(ids) },
     { label: allLiked ? 'Убрать из любимых' : 'Добавить в любимые', icon: allLiked ? 'heartFill' : 'heart', action: () => ids.forEach((id) => toggleLike(id, !allLiked)) },
   ];
+  if (ids.length > 1) items.push('-', { label: 'Обложка для выбранных', icon: 'image', sub: coverSubmenu(ids, `${primaryArtist(t)} ${t.album || t.title}`) });
   if (ids.length === 1) {
     items.push('-');
     if (albumKey(t)) items.push({ label: 'Перейти к альбому', icon: 'album', action: () => navigate({ name: 'album', key: albumKey(t) }) });
     items.push({ label: 'Перейти к исполнителю', icon: 'artist', action: () => navigate({ name: 'artist', key: primaryArtist(t).toLowerCase() }) });
+    items.push({ label: 'Обложка', icon: 'image', sub: coverSubmenu(ids, `${primaryArtist(t)} ${t.title}`) });
+    items.push({ label: 'Текст песни', icon: 'lyrics', sub: () => [
+      { label: 'Найти текст…', icon: 'search', action: () => Lyrics.searchModal(t) },
+      { label: 'Вставить свой текст…', icon: 'paste', action: () => Lyrics.pasteModal(t) },
+    ] });
     items.push({ label: 'Показать в папке', icon: 'folder', action: () => window.api.showItem(t.path) });
     items.push({ label: 'Сведения о файле', icon: 'more', action: () => trackInfo(t) });
   }
@@ -944,25 +1045,23 @@ function sameView(a, b) {
 function likedIds() {
   return Object.entries(S.stats).filter(([id, s]) => s.liked && S.tracks.has(id)).sort((a, b) => (b[1].likedAt || 0) - (a[1].likedAt || 0)).map(([id]) => id);
 }
+const LIB_VIEWS = ['tracks', 'albums', 'artists', 'recent'];
 function renderNav() {
-  const nav = $('#nav');
-  nav.innerHTML = `
-    <div class="nav-title">Библиотека</div>
-    ${navItem({ name: 'tracks' }, 'music', 'Все треки')}
-    ${navItem({ name: 'albums' }, 'album', 'Альбомы')}
-    ${navItem({ name: 'artists' }, 'artist', 'Исполнители')}
-    <div class="nav-title">Онлайн</div>
-    ${navItem({ name: 'radio' }, 'radio', 'Радио')}
-    <div class="nav-title">Подборки</div>
-    ${navItem({ name: 'liked' }, 'heart', 'Любимые', likedIds().length || null)}
-    ${navItem({ name: 'recent' }, 'sparkle', 'Недавно добавленные')}
-    ${navItem({ name: 'top' }, 'fire', 'Часто слушаю')}
-    ${navItem({ name: 'history' }, 'clock', 'Недавно играли')}
-    <div class="nav-title">Плейлисты <button id="nav-new-pl" title="Новый плейлист">${icon('add')}</button></div>
-    ${S.playlists.map((p) => navItem({ name: 'playlist', id: p.id }, 'playlist', p.name, p.ids.filter((id) => S.tracks.has(id)).length)).join('')}
-    ${S.playlists.length ? '' : '<div style="padding:4px 12px;color:var(--text-3);font-size:12px;line-height:1.5">Создайте плейлист кнопкой «+» или перетащите сюда треки</div>'}
+  const v = S.view.name;
+  const item = (view, ic, label, active, count, cls = '') => `<button class="nav-item${cls}${active ? ' active' : ''}" data-nav='${esc(JSON.stringify(view))}'>${icon(ic)}<span>${esc(label)}</span>${count ? `<span class="count">${count}</span>` : ''}</button>`;
+  const liked = likedIds().length;
+  $('#nav').innerHTML = `
+    ${item({ name: 'home' }, 'home', 'Главная', v === 'home')}
+    ${item({ name: 'search' }, 'search', 'Поиск', v === 'search')}
+    ${item({ name: 'tracks' }, 'library', 'Библиотека', LIB_VIEWS.includes(v) || v === 'album' || v === 'artist')}
+    ${item({ name: 'playlists' }, 'playlist', 'Плейлисты', v === 'playlists')}
+    ${item({ name: 'liked' }, 'heart', 'Избранное', v === 'liked', liked)}
+    ${item({ name: 'radio' }, 'radio', 'Радио', v === 'radio')}
+    ${item({ name: 'settings' }, 'settings', 'Настройки', v === 'settings')}
+    <div class="nav-title">Ваши плейлисты <button id="nav-new-pl" title="Новый плейлист">${icon('add')}</button></div>
+    ${S.playlists.map((p) => item({ name: 'playlist', id: p.id }, 'playlist', p.name, v === 'playlist' && S.view.id === p.id, p.ids.filter((id) => S.tracks.has(id)).length, ' small')).join('')}
+    ${S.playlists.length ? '' : '<div style="padding:4px 14px;color:var(--text-3);font-size:12px;line-height:1.5">Нажмите «+» или перетащите сюда треки</div>'}
   `;
-  $('.sidebar-bottom .nav-item').classList.toggle('active', S.view.name === 'settings');
 }
 $('#nav').addEventListener('click', (e) => {
   if (e.target.closest('#nav-new-pl')) return createPlaylist();
@@ -1007,7 +1106,6 @@ $('#nav').addEventListener('drop', (e) => {
   if (v.name === 'playlist') addToPlaylist(v.id, ids);
   else if (v.name === 'liked') { ids.forEach((id) => toggleLike(id, true)); toast('Добавлено в любимые'); }
 });
-$('.sidebar-bottom').addEventListener('click', (e) => { if (e.target.closest('[data-view="settings"]')) navigate({ name: 'settings' }); });
 
 // =====================================================================
 //  Навигация и экраны
@@ -1045,7 +1143,7 @@ function render(keepScroll) {
   const v = S.view;
   if (S.search.trim() && !['settings', 'radio'].includes(v.name)) renderSearch(view);
   else {
-    const fn = VIEWS[v.name] || VIEWS.tracks;
+    const fn = VIEWS[v.name] || VIEWS.home;
     fn(view, v);
   }
   if (keepScroll) view.scrollTop = scroll;
@@ -1053,9 +1151,11 @@ function render(keepScroll) {
   currentList?.refresh();
 }
 
-function head({ kicker, title, sub, art, artClass = '', artIcon = 'music', actions = '', compact = false }) {
-  return `<div class="view-head${compact ? ' compact' : ''}">
-    ${art !== false ? `<div class="art ${artClass}" style="${art ? bg(art) : ''}">${art ? '' : icon(artIcon)}</div>` : ''}
+function head({ kicker, title, sub, art, artClass = '', artIcon = 'music', actions = '', compact = false, banner = null, editable = false }) {
+  const bannerBg = banner ? (banner.startsWith('grad-') ? `<div class="banner-bg grad ${banner}"></div>` : `<div class="banner-bg" style="${bg(banner)}"></div>`) : '';
+  return `<div class="view-head${compact ? ' compact' : ''}${banner ? ' banner' : ''}">
+    ${bannerBg}
+    ${art !== false ? `<div class="art ${artClass}${editable ? ' editable' : ''}" style="${art ? bg(art) : ''}">${art ? '' : icon(artIcon)}${editable ? `<div class="edit-hint">${icon('image')}Обложка</div>` : ''}</div>` : ''}
     <div class="info">
       ${kicker ? `<div class="kicker">${esc(kicker)}</div>` : ''}
       <h1 title="${esc(title)}">${esc(title)}</h1>
@@ -1063,7 +1163,9 @@ function head({ kicker, title, sub, art, artClass = '', artIcon = 'music', actio
       ${actions ? `<div class="actions">${actions}</div>` : ''}
     </div></div>`;
 }
-const playActions = (extra = '') => `<button class="btn primary round" data-act="play">${icon('play')}Слушать</button><button class="btn round" data-act="shuffle">${icon('shuffle')}Перемешать</button>${extra}`;
+const playActions = (extra = '', onBanner = false) => onBanner
+  ? `<button class="btn light round" data-act="play">${icon('play')}Слушать</button><button class="btn ghost-light round" data-act="shuffle">${icon('shuffle')}Перемешать</button>${extra}`
+  : `<button class="btn primary round" data-act="play">${icon('play')}Слушать</button><button class="btn round" data-act="shuffle">${icon('shuffle')}Перемешать</button>${extra}`;
 function bindPlayActions(view, ids) {
   view.querySelector('[data-act="play"]')?.addEventListener('click', () => Player.playList(currentList ? currentList.ids : ids, 0, { shuffle: false }));
   view.querySelector('[data-act="shuffle"]')?.addEventListener('click', () => Player.playList(ids, 0, { shuffle: true, randomStart: true }));
@@ -1099,28 +1201,235 @@ async function addFiles() {
   if (ids.length) { toast(`Добавлено: ${tracksWord(ids.length)}`); }
 }
 
+// ---------- Карточки и ряды ----------
+function cardHtml(it, i) {
+  const mosaic = it.mosaic && it.mosaic.length >= 4;
+  const inner = mosaic ? `<div class="mosaic">${it.mosaic.slice(0, 4).map((c) => `<div style="${bg(c)}"></div>`).join('')}</div>` : it.cover ? '' : icon(it.icon || 'music', it.overlay ? 'big' : '');
+  const style = it.cover && !mosaic ? bg(it.cover) : '';
+  const fab = it.play ? `<button class="play-fab" data-play title="Слушать">${icon('play')}</button>` : '';
+  if (it.overlay) {
+    return `<div class="card overlay" data-i="${i}"><div class="art ${it.grad || ''}" style="${style}">${inner}<div class="label"><div class="t ell">${esc(it.title)}</div><div class="s ell">${esc(it.sub || '')}</div></div></div>${fab}</div>`;
+  }
+  return `<div class="card" data-i="${i}"><div class="art${it.round ? ' round' : ''} ${it.grad || ''}" style="${style}">${inner}</div>${fab}<div class="t ell" title="${esc(it.title)}" style="${it.round ? 'text-align:center' : ''}">${esc(it.title)}</div><div class="s ell" style="${it.round ? 'text-align:center' : ''}">${esc(it.sub || '')}</div></div>`;
+}
+function bindCards(el, items) {
+  el.addEventListener('click', (e) => {
+    const c = e.target.closest('.card');
+    if (!c) return;
+    const it = items[+c.dataset.i];
+    if (e.target.closest('[data-play]')) return it.play && it.play();
+    (it.open || it.play)?.();
+  });
+  el.addEventListener('contextmenu', (e) => {
+    const c = e.target.closest('.card');
+    if (!c) return;
+    const it = items[+c.dataset.i];
+    const ids = it.ids && it.ids();
+    if (!ids || !ids.length) return;
+    e.preventDefault();
+    trackMenu(e.clientX, e.clientY, ids);
+  });
+}
+function rowSection(view, title, items, { wide = false, more = null, grid = false } = {}) {
+  if (!items.length) return;
+  const sec = document.createElement('div');
+  sec.innerHTML = `<div class="section-title"><span>${esc(title)}</span>${more ? `<button data-more>Все ${icon('arrowRight')}</button>` : ''}</div><div class="${grid ? 'grid' : 'hrow' + (wide ? ' wide' : '')}">${items.map(cardHtml).join('')}</div>`;
+  sec.querySelector('[data-more]')?.addEventListener('click', more);
+  bindCards(sec, items);
+  view.appendChild(sec);
+}
+const albumItem = (a) => ({
+  title: a.name, sub: [a.artist, a.year].filter(Boolean).join(' · '), cover: a.cover, icon: 'album',
+  open: () => navigate({ name: 'album', key: a.key }), play: () => Player.playList(sortedTracks(a.ids, 'album'), 0), ids: () => sortedTracks(a.ids, 'album'),
+});
+const artistItem = (a) => ({
+  title: a.name, sub: tracksWord(a.ids.length), cover: a.cover, icon: 'artist', round: true,
+  open: () => navigate({ name: 'artist', key: a.key }), play: () => Player.playList(sortedTracks(a.ids, 'default'), 0), ids: () => sortedTracks(a.ids, 'default'),
+});
+const coversOf = (ids, n = 4) => [...new Set(ids.map((id) => S.tracks.get(id)?.cover).filter(Boolean))].slice(0, n);
+const topIds = () => Object.entries(S.stats).filter(([id, s]) => s.plays > 0 && S.tracks.has(id)).sort((a, b) => b[1].plays - a[1].plays || b[1].last - a[1].last).slice(0, 100).map(([id]) => id);
+const historyIds = () => Object.entries(S.stats).filter(([id, s]) => s.last && S.tracks.has(id)).sort((a, b) => b[1].last - a[1].last).slice(0, 200).map(([id]) => id);
+const recentIds = () => sortedTracks(Array.from(S.tracks.keys()), 'added').slice(0, 300);
+
+// ---------- Главная: баннер-карусель ----------
+let heroTimer = null;
+function heroSlides() {
+  const slides = [];
+  const albums = index().albums;
+  if (!S.tracks.size) {
+    slides.push({ kicker: 'Добро пожаловать', title: 'Музыка начинается здесь', sub: 'Добавьте папку с музыкой — Tembr сам найдёт треки, обложки и тексты песен', grad: 'grad-6', playLabel: 'Добавить папку', play: addFolder, iconName: 'folder' });
+    slides.push({ kicker: 'Онлайн', title: 'Интернет-радио', sub: 'Тысячи бесплатных станций со всего мира', grad: 'grad-3', playLabel: 'Открыть радио', play: () => navigate({ name: 'radio' }), iconName: 'radio' });
+    return slides;
+  }
+  const hist = historyIds();
+  const last = hist.length ? S.tracks.get(hist[0]) : null;
+  let usedKey = null;
+  if (last) {
+    const ak = albumKey(last);
+    const a = ak && albums.get(ak);
+    usedKey = ak;
+    slides.push(a
+      ? { kicker: 'Продолжить слушать', title: a.name, sub: `${a.artist}${a.year ? ' · ' + a.year : ''}`, cover: a.cover, play: () => { const ids = sortedTracks(a.ids, 'album'); Player.playList(ids, Math.max(0, ids.indexOf(last.id))); }, open: () => navigate({ name: 'album', key: ak }) }
+      : { kicker: 'Продолжить слушать', title: last.title, sub: artistOf(last), cover: last.cover, play: () => Player.playList(hist.slice(0, 50), 0) });
+  }
+  const list = Array.from(albums.values()).filter((a) => a.key !== usedKey).sort((a, b) => cmp(a.key, b.key));
+  if (list.length) {
+    const day = Math.floor(Date.now() / 86400000);
+    const a = list[day % list.length];
+    slides.push({ kicker: 'Альбом дня', title: a.name, sub: `${a.artist}${a.year ? ' · ' + a.year : ''} · ${tracksWord(a.ids.length)}`, cover: a.cover, play: () => Player.playList(sortedTracks(a.ids, 'album'), 0), open: () => navigate({ name: 'album', key: a.key }) });
+  }
+  const liked = likedIds();
+  if (liked.length) slides.push({ kicker: 'Ваша подборка', title: 'Любимые треки', sub: tracksWord(liked.length), cover: coversOf(liked, 1)[0], grad: 'grad-2', play: () => Player.playList(liked, 0), open: () => navigate({ name: 'liked' }) });
+  const all = Array.from(S.tracks.keys());
+  const someCover = coversOf(shuffleArr(all.slice()).slice(0, 40), 1)[0];
+  slides.push({ kicker: 'Микс', title: 'Утро начинается с музыки', sub: 'Вся ваша библиотека вперемешку', cover: someCover, grad: 'grad-6', play: () => Player.playList(all, 0, { shuffle: true, randomStart: true }) });
+  slides.push({ kicker: 'Онлайн', title: 'Интернет-радио', sub: 'Тысячи бесплатных станций со всего мира', grad: 'grad-3', playLabel: 'Открыть', play: () => navigate({ name: 'radio' }), iconName: 'radio' });
+  return slides;
+}
+
+function buildHero(slides) {
+  const hero = document.createElement('div');
+  hero.className = 'hero';
+  hero.innerHTML = slides.map((s, i) => `
+    <div class="hero-slide${i === 0 ? ' active' : ''}" data-i="${i}">
+      <div class="hero-bg${s.cover ? '' : ' grad ' + (s.grad || 'grad-6')}" style="${s.cover ? bg(s.cover) : ''}"></div>
+      ${s.cover ? `<div class="hero-img" style="${bg(s.cover)}"></div>` : ''}
+      <div class="hero-shade"></div>
+      <div class="hero-text">
+        <div class="hero-kicker">${esc(s.kicker)}</div>
+        <h2 class="${s.title.length > 22 ? 'long' : ''}">${esc(s.title)}</h2>
+        <div class="hero-sub">${esc(s.sub || '')}</div>
+        <div class="hero-actions">
+          <button class="btn light round" data-hplay>${icon(s.iconName || 'play')}${esc(s.playLabel || 'Слушать')}</button>
+          ${s.open ? `<button class="circle-btn ghost-light" data-hopen title="Открыть">${icon('arrowRight')}</button>` : ''}
+        </div>
+      </div>
+    </div>`).join('') + (slides.length > 1 ? `<div class="hero-dots">${slides.map((_, i) => `<button data-dot="${i}" class="${i === 0 ? 'active' : ''}"></button>`).join('')}</div>` : '');
+  let cur = 0;
+  const go = (i) => {
+    cur = (i + slides.length) % slides.length;
+    hero.querySelectorAll('.hero-slide').forEach((el, k) => el.classList.toggle('active', k === cur));
+    hero.querySelectorAll('[data-dot]').forEach((el, k) => el.classList.toggle('active', k === cur));
+  };
+  hero.addEventListener('click', (e) => {
+    const d = e.target.closest('[data-dot]');
+    if (d) return go(+d.dataset.dot);
+    const s = slides[cur];
+    if (e.target.closest('[data-hplay]')) return s.play && s.play();
+    if (e.target.closest('[data-hopen]')) return s.open && s.open();
+  });
+  let paused = false;
+  hero.addEventListener('mouseenter', () => { paused = true; });
+  hero.addEventListener('mouseleave', () => { paused = false; });
+  clearInterval(heroTimer);
+  if (slides.length > 1) heroTimer = setInterval(() => { if (!hero.isConnected) return clearInterval(heroTimer); if (!paused) go(cur + 1); }, 8000);
+  return hero;
+}
+
+function libTabs(view, tab) {
+  const tabs = [['tracks', 'Треки'], ['albums', 'Альбомы'], ['artists', 'Исполнители'], ['recent', 'Недавно добавленные']];
+  const el = document.createElement('div');
+  el.className = 'tabs';
+  el.innerHTML = tabs.map(([k, n]) => `<button data-tab="${k}" class="${k === tab ? 'on' : ''}">${n}</button>`).join('');
+  el.addEventListener('click', (e) => { const b = e.target.closest('[data-tab]'); if (b && b.dataset.tab !== tab) navigate({ name: b.dataset.tab }, true); });
+  view.appendChild(el);
+}
+
+function coverEditable(view, ids, query) {
+  view.querySelector('.view-head .art.editable')?.addEventListener('click', (e) => {
+    const r = e.currentTarget.getBoundingClientRect();
+    coverMenu(r.left + 20, r.bottom - 10, ids, query);
+  });
+}
+
 const VIEWS = {
+  home(view) {
+    view.appendChild(buildHero(heroSlides()));
+    if (!S.tracks.size) {
+      const box = document.createElement('div');
+      emptyLibrary(box);
+      view.appendChild(box);
+      return;
+    }
+    const albums = index().albums;
+    // Недавно прослушанные: альбомы или отдельные треки
+    const seen = new Set();
+    const recent = [];
+    for (const id of historyIds()) {
+      const t = S.tracks.get(id);
+      const ak = albumKey(t);
+      const k = ak || 't:' + id;
+      if (seen.has(k)) continue;
+      seen.add(k);
+      if (ak && albums.get(ak)) recent.push(albumItem(albums.get(ak)));
+      else recent.push({ title: t.title, sub: artistOf(t), cover: t.cover, play: () => Player.playList([id], 0), ids: () => [id] });
+      if (recent.length >= 14) break;
+    }
+    rowSection(view, 'Недавно прослушанные', recent, { more: () => navigate({ name: 'history' }) });
+
+    const liked = likedIds(), top = topIds(), hist = historyIds(), added = recentIds(), all = Array.from(S.tracks.keys());
+    const mixes = [
+      { title: 'Любимые', sub: liked.length ? tracksWord(liked.length) : 'Отмечайте треки ♡', overlay: true, grad: 'grad-2', icon: 'heartFill', mosaic: coversOf(liked), open: () => navigate({ name: 'liked' }), play: liked.length ? () => Player.playList(liked, 0) : null },
+      { title: 'Часто слушаю', sub: top.length ? tracksWord(top.length) : 'Пока пусто', overlay: true, grad: 'grad-4', icon: 'fire', mosaic: coversOf(top), open: () => navigate({ name: 'top' }), play: top.length ? () => Player.playList(top, 0) : null },
+      { title: 'Недавно добавленные', sub: tracksWord(added.length), overlay: true, grad: 'grad-3', icon: 'sparkle', mosaic: coversOf(added), open: () => navigate({ name: 'recent' }), play: () => Player.playList(added, 0) },
+      { title: 'Случайный микс', sub: 'Вся библиотека', overlay: true, grad: 'grad-6', icon: 'shuffle', mosaic: coversOf(shuffleArr(all.slice()).slice(0, 60)), play: () => Player.playList(all, 0, { shuffle: true, randomStart: true }) },
+      { title: 'Недавно играли', sub: hist.length ? tracksWord(hist.length) : 'История пуста', overlay: true, grad: 'grad-5', icon: 'clock', mosaic: coversOf(hist), open: () => navigate({ name: 'history' }), play: hist.length ? () => Player.playList(hist, 0) : null },
+    ];
+    rowSection(view, 'Подборки для вас', mixes, { wide: true });
+
+    const newAlbums = Array.from(albums.values()).map((a) => ({ a, t: Math.max(...a.ids.map((id) => S.tracks.get(id)?.addedAt || 0)) })).sort((x, y) => y.t - x.t).slice(0, 14).map((x) => albumItem(x.a));
+    rowSection(view, 'Новые альбомы в библиотеке', newAlbums, { more: () => navigate({ name: 'albums' }) });
+
+    const artists = Array.from(index().artists.values()).sort((a, b) => b.ids.length - a.ids.length).slice(0, 14).map(artistItem);
+    rowSection(view, 'Исполнители', artists, { more: () => navigate({ name: 'artists' }) });
+
+    if (S.playlists.length) rowSection(view, 'Ваши плейлисты', S.playlists.map(playlistItem), { more: () => navigate({ name: 'playlists' }) });
+  },
+
+  search(view) {
+    const genres = new Map();
+    for (const t of S.tracks.values()) if (t.genre) genres.set(t.genre, (genres.get(t.genre) || 0) + 1);
+    const top = [...genres.entries()].sort((a, b) => b[1] - a[1]).slice(0, 24);
+    view.insertAdjacentHTML('beforeend', head({ kicker: 'Поиск', title: 'Что послушаем?', sub: 'Начните вводить название трека, исполнителя или альбома в строке поиска сверху', art: false, compact: true }));
+    if (top.length) {
+      view.insertAdjacentHTML('beforeend', `<div class="section-title">Жанры в вашей библиотеке</div><div class="radio-filters" id="genres">${top.map(([g, n]) => `<button class="chip" data-g="${esc(g)}">${esc(g)} <span style="opacity:.6">${n}</span></button>`).join('')}</div>`);
+      $('#genres').addEventListener('click', (e) => { const b = e.target.closest('[data-g]'); if (!b) return; $('#search').value = b.dataset.g; $('#search').dispatchEvent(new Event('input')); });
+    }
+    setTimeout(() => $('#search').focus(), 0);
+  },
+
   tracks(view) {
     const ids = sortedTracks(Array.from(S.tracks.keys()), 'default');
     if (!ids.length) return emptyLibrary(view);
-    view.insertAdjacentHTML('beforeend', head({ kicker: 'Библиотека', title: 'Все треки', sub: summary(ids), art: false, compact: true, actions: playActions(`<button class="btn round" id="h-add">${icon('folder')}Добавить папку</button>`) }));
+    view.insertAdjacentHTML('beforeend', head({ kicker: 'Моя музыка', title: 'Библиотека', sub: summary(ids), art: false, compact: true, actions: playActions(`<button class="btn round" id="h-add">${icon('folder')}Добавить папку</button>`) }));
     bindPlayActions(view, ids);
     $('#h-add').addEventListener('click', addFolder);
+    libTabs(view, 'tracks');
     currentList = new TrackList(view, ids);
   },
 
   albums(view) {
-    const albums = Array.from(index().albums.values()).sort((a, b) => cmp(a.artist, b.artist) || (a.year || 0) - (b.year || 0) || cmp(a.name, b.name));
     if (!S.tracks.size) return emptyLibrary(view);
-    view.insertAdjacentHTML('beforeend', head({ kicker: 'Библиотека', title: 'Альбомы', sub: plural(albums.length, 'альбом', 'альбома', 'альбомов'), art: false, compact: true }));
+    const albums = Array.from(index().albums.values()).sort((a, b) => cmp(a.artist, b.artist) || (a.year || 0) - (b.year || 0) || cmp(a.name, b.name));
+    view.insertAdjacentHTML('beforeend', head({ kicker: 'Моя музыка', title: 'Библиотека', sub: plural(albums.length, 'альбом', 'альбома', 'альбомов'), art: false, compact: true }));
+    libTabs(view, 'albums');
     view.appendChild(albumGrid(albums));
   },
 
   artists(view) {
-    const artists = Array.from(index().artists.values()).sort((a, b) => cmp(a.name, b.name));
     if (!S.tracks.size) return emptyLibrary(view);
-    view.insertAdjacentHTML('beforeend', head({ kicker: 'Библиотека', title: 'Исполнители', sub: plural(artists.length, 'исполнитель', 'исполнителя', 'исполнителей'), art: false, compact: true }));
+    const artists = Array.from(index().artists.values()).sort((a, b) => cmp(a.name, b.name));
+    view.insertAdjacentHTML('beforeend', head({ kicker: 'Моя музыка', title: 'Библиотека', sub: plural(artists.length, 'исполнитель', 'исполнителя', 'исполнителей'), art: false, compact: true }));
+    libTabs(view, 'artists');
     view.appendChild(artistGrid(artists));
+  },
+
+  recent(view) {
+    const ids = recentIds();
+    view.insertAdjacentHTML('beforeend', head({ kicker: 'Моя музыка', title: 'Библиотека', sub: ids.length ? `Последние ${tracksWord(ids.length)}, появившиеся в библиотеке` : 'Пока пусто', art: false, compact: true, actions: ids.length ? playActions() : '' }));
+    bindPlayActions(view, ids);
+    libTabs(view, 'recent');
+    if (ids.length) currentList = new TrackList(view, ids);
   },
 
   album(view, v) {
@@ -1128,11 +1437,13 @@ const VIEWS = {
     if (!a) return (view.innerHTML = '<div class="empty"><h2>Альбом не найден</h2></div>');
     const ids = sortedTracks(a.ids, 'album');
     view.insertAdjacentHTML('beforeend', head({
-      kicker: 'Альбом', title: a.name, art: a.cover, artIcon: 'album',
+      kicker: 'Альбом', title: a.name, art: a.cover, artIcon: 'album', banner: a.cover || 'grad-6', editable: true,
       sub: `<span class="link" data-artist="${esc(a.artist.toLowerCase())}">${esc(a.artist)}</span>${a.year ? ' · ' + a.year : ''} · ${summary(ids)}`,
-      actions: playActions(),
+      actions: playActions('', true),
     }));
     bindPlayActions(view, ids);
+    coverEditable(view, ids, `${a.artist} ${a.name}`);
+    view.insertAdjacentHTML('beforeend', '<div style="height:14px"></div>');
     currentList = new TrackList(view, ids, { noAlbum: true, trackNumbers: true });
   },
 
@@ -1141,53 +1452,33 @@ const VIEWS = {
     if (!ar) return (view.innerHTML = '<div class="empty"><h2>Исполнитель не найден</h2></div>');
     const ids = sortedTracks(ar.ids, 'default');
     const albums = Array.from(index().albums.values()).filter((a) => a.ids.some((id) => ar.ids.includes(id))).sort((a, b) => (b.year || 0) - (a.year || 0));
-    view.insertAdjacentHTML('beforeend', head({ kicker: 'Исполнитель', title: ar.name, art: ar.cover, artClass: 'round', artIcon: 'artist', sub: `${summary(ids)}${albums.length ? ' · ' + plural(albums.length, 'альбом', 'альбома', 'альбомов') : ''}`, actions: playActions() }));
+    view.insertAdjacentHTML('beforeend', head({ kicker: 'Исполнитель', title: ar.name, art: ar.cover, artClass: 'round', artIcon: 'artist', banner: ar.cover || 'grad-6', sub: `${summary(ids)}${albums.length ? ' · ' + plural(albums.length, 'альбом', 'альбома', 'альбомов') : ''}`, actions: playActions('', true) }));
     bindPlayActions(view, ids);
-    if (albums.length) {
-      view.insertAdjacentHTML('beforeend', '<div class="section-title">Альбомы</div>');
-      view.appendChild(albumGrid(albums, true));
-      view.insertAdjacentHTML('beforeend', '<div class="section-title">Все треки</div>');
-    }
+    if (albums.length) rowSection(view, 'Альбомы', albums.map(albumItem));
+    view.insertAdjacentHTML('beforeend', '<div class="section-title">Все треки</div>');
     currentList = new TrackList(view, ids);
   },
 
-  liked(view) {
-    const ids = likedIds();
-    view.insertAdjacentHTML('beforeend', head({ kicker: 'Подборка', title: 'Любимые', sub: ids.length ? summary(ids) : 'Нажмите ♡ у трека, чтобы добавить его сюда', art: null, artClass: 'grad-2', artIcon: 'heartFill', actions: ids.length ? playActions() : '' }));
-    bindPlayActions(view, ids);
-    if (ids.length) currentList = new TrackList(view, ids);
-  },
+  liked(view) { smartView(view, likedIds(), { kicker: 'Избранное', title: 'Любимые треки', grad: 'grad-2', ic: 'heartFill', empty: 'Нажмите ♡ у трека, чтобы добавить его сюда' }); },
+  top(view) { smartView(view, topIds(), { kicker: 'Подборка', title: 'Часто слушаю', grad: 'grad-4', ic: 'fire', empty: 'Слушайте музыку — здесь соберутся ваши хиты', sub: (ids) => `${tracksWord(ids.length)}, которые вы слушаете чаще всего` }); },
+  history(view) { smartView(view, historyIds(), { kicker: 'Подборка', title: 'Недавно играли', grad: 'grad-5', ic: 'clock', empty: 'История прослушивания пока пуста' }); },
 
-  recent(view) {
-    const ids = sortedTracks(Array.from(S.tracks.keys()), 'added').slice(0, 300);
-    view.insertAdjacentHTML('beforeend', head({ kicker: 'Подборка', title: 'Недавно добавленные', sub: ids.length ? `Последние ${tracksWord(ids.length)}, которые появились в библиотеке` : 'Пока пусто', art: null, artClass: 'grad-3', artIcon: 'sparkle', actions: ids.length ? playActions() : '' }));
-    bindPlayActions(view, ids);
-    if (ids.length) currentList = new TrackList(view, ids, { noSort: true });
-  },
-
-  top(view) {
-    const ids = Object.entries(S.stats).filter(([id, s]) => s.plays > 0 && S.tracks.has(id)).sort((a, b) => b[1].plays - a[1].plays || b[1].last - a[1].last).slice(0, 100).map(([id]) => id);
-    view.insertAdjacentHTML('beforeend', head({ kicker: 'Подборка', title: 'Часто слушаю', sub: ids.length ? `${tracksWord(ids.length)}, которые вы слушаете чаще всего` : 'Слушайте музыку — здесь соберутся ваши хиты', art: null, artClass: 'grad-4', artIcon: 'fire', actions: ids.length ? playActions() : '' }));
-    bindPlayActions(view, ids);
-    if (ids.length) currentList = new TrackList(view, ids);
-  },
-
-  history(view) {
-    const ids = Object.entries(S.stats).filter(([id, s]) => s.last && S.tracks.has(id)).sort((a, b) => b[1].last - a[1].last).slice(0, 200).map(([id]) => id);
-    view.insertAdjacentHTML('beforeend', head({ kicker: 'Подборка', title: 'Недавно играли', sub: ids.length ? tracksWord(ids.length) : 'История прослушивания пока пуста', art: null, artClass: 'grad-5', artIcon: 'clock', actions: ids.length ? playActions() : '' }));
-    bindPlayActions(view, ids);
-    if (ids.length) currentList = new TrackList(view, ids);
+  playlists(view) {
+    view.insertAdjacentHTML('beforeend', head({ kicker: 'Моя музыка', title: 'Плейлисты', sub: S.playlists.length ? plural(S.playlists.length, 'плейлист', 'плейлиста', 'плейлистов') : 'У вас пока нет плейлистов', art: false, compact: true, actions: `<button class="btn primary round" id="pl-new">${icon('add')}Создать плейлист</button>` }));
+    $('#pl-new').addEventListener('click', () => createPlaylist());
+    const items = [...S.playlists.map(playlistItem), ...smartItems()];
+    rowSection(view, 'Ваши плейлисты и подборки', items, { grid: true });
   },
 
   playlist(view, v) {
     const p = S.playlists.find((x) => x.id === v.id);
-    if (!p) return navigate({ name: 'tracks' }, true);
+    if (!p) return navigate({ name: 'home' }, true);
     const ids = p.ids.filter((id) => S.tracks.has(id));
-    const covers = [...new Set(ids.map((id) => S.tracks.get(id).cover).filter(Boolean))].slice(0, 4);
+    const covers = coversOf(ids);
     view.insertAdjacentHTML('beforeend', head({
-      kicker: 'Плейлист', title: p.name, art: covers[0] || null, artClass: covers.length ? '' : 'grad-1', artIcon: 'playlist',
+      kicker: 'Плейлист', title: p.name, art: covers[0] || null, artClass: covers.length ? '' : 'grad-1', artIcon: 'playlist', banner: covers[0] || 'grad-1',
       sub: ids.length ? summary(ids) : 'Плейлист пуст — добавьте треки через правый клик или перетащите их на плейлист в меню слева',
-      actions: (ids.length ? playActions() : '') + `<button class="icon-btn" id="pl-rename" title="Переименовать">${icon('edit')}</button><button class="icon-btn" id="pl-del" title="Удалить плейлист">${icon('trash')}</button>`,
+      actions: (ids.length ? playActions('', true) : '') + `<button class="circle-btn ghost-light" id="pl-rename" title="Переименовать">${icon('edit')}</button><button class="circle-btn ghost-light" id="pl-del" title="Удалить плейлист">${icon('trash')}</button>`,
     }));
     if (covers.length >= 4) {
       const art = view.querySelector('.view-head .art');
@@ -1197,12 +1488,33 @@ const VIEWS = {
     bindPlayActions(view, ids);
     $('#pl-rename').addEventListener('click', () => renamePlaylist(p));
     $('#pl-del').addEventListener('click', () => deletePlaylist(p));
+    view.insertAdjacentHTML('beforeend', '<div style="height:14px"></div>');
     if (ids.length) currentList = new TrackList(view, ids);
   },
 
   radio(view) { renderRadio(view); },
   settings(view) { renderSettings(view); },
 };
+
+function smartView(view, ids, o) {
+  const cover = coversOf(ids, 1)[0];
+  view.insertAdjacentHTML('beforeend', head({ kicker: o.kicker, title: o.title, sub: ids.length ? (o.sub ? o.sub(ids) : summary(ids)) : o.empty, art: null, artClass: o.grad, artIcon: o.ic, banner: cover || o.grad, actions: ids.length ? playActions('', true) : '' }));
+  bindPlayActions(view, ids);
+  view.insertAdjacentHTML('beforeend', '<div style="height:14px"></div>');
+  if (ids.length) currentList = new TrackList(view, ids);
+}
+function playlistItem(p) {
+  const ids = p.ids.filter((id) => S.tracks.has(id));
+  const covers = coversOf(ids);
+  return { title: p.name, sub: tracksWord(ids.length), cover: covers[0], mosaic: covers, icon: 'playlist', grad: covers.length ? '' : 'grad-1', open: () => navigate({ name: 'playlist', id: p.id }), play: ids.length ? () => Player.playList(ids, 0) : null, ids: () => ids };
+}
+function smartItems() {
+  const liked = likedIds(), top = topIds();
+  return [
+    { title: 'Любимые', sub: tracksWord(liked.length), overlay: true, grad: 'grad-2', icon: 'heartFill', mosaic: coversOf(liked), open: () => navigate({ name: 'liked' }), play: liked.length ? () => Player.playList(liked, 0) : null },
+    { title: 'Часто слушаю', sub: tracksWord(top.length), overlay: true, grad: 'grad-4', icon: 'fire', mosaic: coversOf(top), open: () => navigate({ name: 'top' }), play: top.length ? () => Player.playList(top, 0) : null },
+  ];
+}
 
 function albumGrid(albums, hideArtist = false) {
   const g = document.createElement('div');
@@ -1512,22 +1824,68 @@ function openEq() {
 // =====================================================================
 //  Правая панель: текст песни и очередь
 // =====================================================================
-function setPanel(name) {
-  S.panel = S.panel === name ? null : name;
-  $('#panel').classList.toggle('hidden', !S.panel);
-  document.body.classList.toggle('has-panel', !!S.panel);
+// toggle=true: повторный выбор той же вкладки скрывает панель
+function setPanel(name, toggle = true) {
+  if (name === null) S.panel = null;
+  else if (toggle && S.panel === name) S.panel = null;
+  else S.panel = name;
+  if (S.panel) S.panelTab = S.panel;
+  document.body.classList.toggle('panel-closed', !S.panel);
+  setSettingDebounced({ panel: S.panel || 'closed' });
   $$('.panel-tabs [data-panel]').forEach((b) => b.classList.toggle('active', b.dataset.panel === S.panel));
   updateControls();
-  if (S.panel === 'lyrics') Lyrics.render();
-  if (S.panel === 'queue') renderQueuePanel();
+  renderPanelBody();
   currentList?.refresh();
+}
+function renderPanelBody() {
+  if (S.panel === 'lyrics') Lyrics.render();
+  else if (S.panel === 'queue') renderQueuePanel();
+  else if (S.panel === 'similar') renderSimilar();
 }
 $('.panel-tabs').addEventListener('click', (e) => {
   const b = e.target.closest('[data-panel]');
-  if (b && b.dataset.panel !== S.panel) setPanel(b.dataset.panel);
+  if (b && b.dataset.panel !== S.panel) setPanel(b.dataset.panel, false);
 });
-$('#panel-close').addEventListener('click', () => setPanel(S.panel));
+$('#panel-close').addEventListener('click', () => setPanel(null));
 
+// ---------- Похожие треки ----------
+function similarIds(t, n = 20) {
+  const out = [];
+  const add = (id) => { if (id !== t.id && !out.includes(id) && S.tracks.has(id)) out.push(id); };
+  const ar = index().artists.get(primaryArtist(t).toLowerCase());
+  const curAlbum = albumKey(t);
+  // Тот же исполнитель, но другие альбомы — в первую очередь
+  if (ar) shuffleArr(ar.ids.filter((id) => albumKey(S.tracks.get(id)) !== curAlbum)).forEach(add);
+  if (t.genre) shuffleArr(Array.from(S.tracks.values()).filter((x) => x.genre && x.genre.toLowerCase() === t.genre.toLowerCase()).map((x) => x.id)).forEach((id) => out.length < n && add(id));
+  if (ar) ar.ids.forEach((id) => out.length < n && add(id));
+  if (out.length < 6) shuffleArr(likedIds().slice()).forEach((id) => out.length < 10 && add(id));
+  if (out.length < 6) shuffleArr(Array.from(S.tracks.keys())).forEach((id) => out.length < 12 && add(id));
+  return out.slice(0, n);
+}
+let similarFor = null, similarList = [];
+function renderSimilar(force) {
+  if (S.panel !== 'similar') return;
+  const body = $('#panel-body');
+  const c = Player.current;
+  if (!c || c.kind !== 'track') {
+    similarFor = null;
+    const pool = shuffleArr(Array.from(S.tracks.keys())).slice(0, 12);
+    similarList = pool;
+    body.innerHTML = pool.length ? `<div class="q-section">Попробуйте послушать</div>${pool.map((id) => simItem(id)).join('')}` : `<div class="panel-empty">${icon('music')}Добавьте музыку, и здесь появятся рекомендации</div>`;
+    return;
+  }
+  if (similarFor !== c.id || force) { similarFor = c.id; similarList = similarIds(c.track); }
+  body.innerHTML = similarList.length
+    ? `<div class="q-section">${S.tracks.size > 30 ? 'Похожие треки' : 'Вам может понравиться'}<button id="sim-play">Слушать все</button></div>${similarList.map((id) => simItem(id)).join('')}`
+    : `<div class="panel-empty">${icon('sparkle')}Похожих треков в библиотеке пока нет.<br/><small style="color:var(--text-3)">Чем больше музыки — тем точнее подборка.</small></div>`;
+}
+function simItem(id) {
+  const t = S.tracks.get(id);
+  if (!t) return '';
+  return `<div class="q-item" data-sim="${esc(id)}"><div class="cv" style="${bg(t.cover)}">${t.cover ? '' : icon('music')}</div><div class="meta"><div class="t ell">${esc(t.title)}</div><div class="a ell">${esc(artistOf(t))}</div></div><button class="icon-btn small add" data-add title="Добавить в очередь">${icon('add')}</button></div>`;
+}
+
+// ---------- Текст песни ----------
 const Lyrics = {
   cache: new Map(),
   lines: null,
@@ -1551,6 +1909,13 @@ const Lyrics = {
     if (S.panel === 'lyrics') this.render();
   },
 
+  async load(t) {
+    let data = await window.api.lyrics({ id: t.id, title: t.title, artist: t.artist, album: t.album, duration: t.duration });
+    if (data && data.retry) return t.lyrics ? (/\[\d+:\d+/.test(t.lyrics) ? { synced: t.lyrics, source: 'файл трека' } : { plain: t.lyrics, source: 'файл трека' }) : data;
+    if (!data && t.lyrics) data = /\[\d+:\d+/.test(t.lyrics) ? { synced: t.lyrics, source: 'файл трека' } : { plain: t.lyrics, source: 'файл трека' };
+    return data || { none: true };
+  },
+
   async render() {
     if (S.panel !== 'lyrics') return;
     const body = $('#panel-body');
@@ -1563,24 +1928,29 @@ const Lyrics = {
     let data = this.cache.get(t.id);
     if (!data) {
       body.innerHTML = `<div class="panel-empty"><div class="spinner" style="margin:0 auto 14px"></div>Ищу текст песни…</div>`;
-      data = await window.api.lyrics({ title: t.title, artist: t.artist, album: t.album, duration: t.duration });
-      if (!data && t.lyrics) data = /\[\d+:\d+/.test(t.lyrics) ? { synced: t.lyrics, source: 'теги файла' } : { plain: t.lyrics, source: 'теги файла' };
-      data = data || { none: true };
-      this.cache.set(t.id, data);
+      data = await this.load(t);
+      if (!data.retry) this.cache.set(t.id, data);
       if (Player.current?.id !== t.id || S.panel !== 'lyrics') return;
     }
-    if (data.instrumental) return (body.innerHTML = `<div class="panel-empty">${icon('music')}Это инструментальная композиция ♪</div>`);
+    const src = `<div class="lyrics-src"><span>Источник: ${esc(data.source || 'LRCLIB')}</span><button data-ly="search">Другой вариант</button>${data.manual ? '<button data-ly="reset">Сбросить</button>' : '<button data-ly="paste">Свой текст</button>'}</div>`;
+    if (data.retry) return (body.innerHTML = `<div class="panel-empty">${icon('web')}Не удалось связаться с сервисом текстов. Проверьте интернет.<div class="acts"><button class="btn" data-ly="retry">${icon('refresh')}Повторить</button></div></div>`);
+    if (data.instrumental) return (body.innerHTML = `<div class="panel-empty">${icon('music')}Это инструментальная композиция ♪</div>${src}`);
     if (data.synced) {
       this.lines = this.parseLrc(data.synced);
-      body.innerHTML = `<div class="lyrics">${this.lines.map((l, i) => `<div class="line" data-i="${i}">${esc(l.text) || '♪'}</div>`).join('')}</div><div class="lyrics-src">Источник: ${esc(data.source || 'LRCLIB')}</div>`;
+      body.innerHTML = `<div class="lyrics">${this.lines.map((l, i) => `<div class="line" data-i="${i}">${esc(l.text) || '♪'}</div>`).join('')}</div>${src}`;
       this.tick(true);
       return;
     }
     if (data.plain) {
-      body.innerHTML = `<div class="lyrics plain">${esc(data.plain)}</div><div class="lyrics-src">Источник: ${esc(data.source || 'LRCLIB')}</div>`;
+      body.innerHTML = `<div class="lyrics plain">${esc(data.plain)}</div>${src}`;
       return;
     }
-    body.innerHTML = `<div class="panel-empty">${icon('lyrics')}Текст для этой песни не найден.<br/><small style="color:var(--text-3)">Проверьте, что у трека указаны исполнитель и название.</small></div>`;
+    body.innerHTML = `<div class="panel-empty">${icon('lyrics')}<b>Текст не найден</b><br/><small style="color:var(--text-3)">В открытой базе LRCLIB нет этой песни. Можно поискать по-другому или вставить текст самому — он сохранится.</small>
+      <div class="acts">
+        <button class="btn" data-ly="search">${icon('search')}Найти вручную</button>
+        <button class="btn" data-ly="paste">${icon('paste')}Вставить текст</button>
+        <button class="btn" data-ly="web">${icon('web')}Искать в интернете</button>
+      </div></div>`;
   },
 
   tick(force) {
@@ -1594,7 +1964,126 @@ const Lyrics = {
     els.forEach((el, k) => { el.classList.toggle('active', k === i); el.classList.toggle('past', k < i); });
     if (i >= 0 && Date.now() - this.lastUserScroll > 3000) els[i]?.scrollIntoView({ block: 'center', behavior: force ? 'auto' : 'smooth' });
   },
+
+  async save(t, data) {
+    await window.api.lyricsSet(t.id, data);
+    this.cache.delete(t.id);
+    if (Player.current?.id === t.id) this.render();
+  },
+
+  searchModal(t) {
+    const q0 = `${primaryArtist(t) === UNKNOWN_ARTIST ? '' : primaryArtist(t)} ${t.title}`.trim();
+    modal(`<h2>Найти текст песни</h2><div class="hint">Поиск по базе LRCLIB. Попробуйте изменить запрос: только название, другое написание исполнителя, латиницу/кириллицу.</div>
+      <div class="search-row"><input class="input" id="lq" value="${esc(q0)}" spellcheck="false"/><button class="btn primary" id="lgo">${icon('search')}Найти</button></div>
+      <div class="ly-list" id="lres"></div>
+      <div class="row"><button class="btn" data-close>Закрыть</button></div>`, (m, close) => {
+      let results = [];
+      const run = async () => {
+        const box = m.querySelector('#lres');
+        box.innerHTML = '<div class="scan-status" style="padding:10px"><div class="spinner"></div>Ищу…</div>';
+        results = await window.api.lyricsSearch(m.querySelector('#lq').value);
+        box.innerHTML = results.length ? results.map((r, i) => `<div class="ly-item" data-i="${i}"><div class="meta"><div class="t ell">${esc(r.title)}</div><div class="s ell">${esc([r.artist, r.album, r.duration ? fmtTime(r.duration) : ''].filter(Boolean).join(' · '))}</div></div><span class="badge">${r.synced ? 'синхр.' : 'текст'}</span></div>`).join('') : '<div class="panel-empty" style="padding:20px">Ничего не найдено. Попробуйте другой запрос или вставьте текст вручную.</div>';
+      };
+      m.querySelector('#lgo').addEventListener('click', run);
+      m.querySelector('#lq').addEventListener('keydown', (e) => e.key === 'Enter' && run());
+      m.querySelector('#lres').addEventListener('click', (e) => {
+        const it = e.target.closest('.ly-item');
+        if (!it) return;
+        const r = results[+it.dataset.i];
+        close();
+        this.save(t, { synced: r.synced, plain: r.plain, source: `LRCLIB · ${r.artist} — ${r.title}` });
+        toast('Текст сохранён для этого трека');
+      });
+      run();
+    });
+  },
+
+  pasteModal(t) {
+    modal(`<h2>Свой текст песни</h2><div class="hint">Вставьте текст. Если в нём есть метки времени вида <b>[01:23.45]</b> (формат LRC), строки будут подсвечиваться по ходу песни.</div>
+      <textarea class="input" id="lt" rows="14" style="width:560px;max-width:80vw" spellcheck="false" placeholder="Текст песни…"></textarea>
+      <div class="row"><button class="btn" data-close>Отмена</button><button class="btn primary" id="lok">Сохранить</button></div>`, (m, close) => {
+      const ta = m.querySelector('#lt');
+      ta.focus();
+      m.querySelector('#lok').addEventListener('click', () => {
+        const v = ta.value.trim();
+        if (!v) return ta.focus();
+        close();
+        const synced = /\[\d+:\d+(?:[.:]\d+)?\]/.test(v);
+        this.save(t, synced ? { synced: v, source: 'вручную' } : { plain: v, source: 'вручную' });
+        toast('Текст сохранён');
+      });
+    });
+  },
 };
+$('#panel-body').addEventListener('click', (e) => {
+  const act = e.target.closest('[data-ly]');
+  const t = Player.current?.track;
+  if (act && t) {
+    const a = act.dataset.ly;
+    if (a === 'search') return Lyrics.searchModal(t);
+    if (a === 'paste') return Lyrics.pasteModal(t);
+    if (a === 'reset') return Lyrics.save(t, null);
+    if (a === 'retry') return Lyrics.render();
+    if (a === 'web') return window.api.openExternal('https://www.google.com/search?q=' + encodeURIComponent(`${artistOf(t)} ${t.title} текст песни`));
+  }
+  if (S.panel === 'similar') {
+    if (e.target.closest('#sim-play')) return Player.playList(similarList, 0);
+    const it = e.target.closest('[data-sim]');
+    if (!it) return;
+    const id = it.dataset.sim;
+    if (e.target.closest('[data-add]')) return Player.addToQueue([id]);
+    if (Player.index < 0) return Player.playList([id], 0);
+    Player.queue.splice(Player.index + 1, 0, Player.entry(id));
+    Player.base.push(Player.queue[Player.index + 1]);
+    Player.next();
+  }
+});
+$('#panel-body').addEventListener('contextmenu', (e) => {
+  const it = e.target.closest('[data-sim]');
+  if (!it) return;
+  e.preventDefault();
+  trackMenu(e.clientX, e.clientY, [it.dataset.sim]);
+});
+
+// ---------- Обложки вручную ----------
+function coverMenu(x, y, ids, query) {
+  openMenu(x, y, coverSubmenu(ids, query)());
+}
+function coverSubmenu(ids, query) {
+  return () => [
+    { label: 'Найти обложку в интернете…', icon: 'search', action: () => coverPicker(ids, query) },
+    { label: 'Выбрать картинку с компьютера…', icon: 'image', action: async () => { if (await window.api.coverFile(ids)) toast('Обложка обновлена'); } },
+    '-',
+    { label: 'Найти автоматически заново', icon: 'refresh', action: async () => { await window.api.coverReset(ids, true); toast('Ищу обложку…'); } },
+    { label: 'Убрать обложку', icon: 'trash', danger: true, action: () => window.api.coverReset(ids, false) },
+  ];
+}
+function coverPicker(ids, query) {
+  modal(`<h2>Выбор обложки</h2><div class="hint">Найдите трек или альбом по названию и нажмите на подходящую обложку.</div>
+    <div class="search-row"><input class="input" id="cq" value="${esc(query)}" spellcheck="false"/><button class="btn primary" id="cgo">${icon('search')}Найти</button></div>
+    <div class="pick-grid" id="cres"></div>
+    <div class="row"><button class="btn" data-close>Закрыть</button></div>`, (m, close) => {
+    let results = [];
+    const run = async () => {
+      const box = m.querySelector('#cres');
+      box.innerHTML = '<div class="scan-status"><div class="spinner"></div>Ищу…</div>';
+      results = await window.api.coverSearch(m.querySelector('#cq').value);
+      box.innerHTML = results.length ? results.map((r, i) => `<div class="pick" data-i="${i}" title="${esc(r.source)}"><img src="${esc(r.thumb || r.image)}" loading="lazy" referrerpolicy="no-referrer"/><div class="t ell">${esc(r.title)}</div><div class="s ell">${esc(r.artist || '')}</div></div>`).join('') : '<div class="panel-empty" style="grid-column:1/-1">Ничего не найдено. Попробуйте изменить запрос.</div>';
+    };
+    m.querySelector('#cgo').addEventListener('click', run);
+    m.querySelector('#cq').addEventListener('keydown', (e) => e.key === 'Enter' && run());
+    m.querySelector('#cres').addEventListener('click', async (e) => {
+      const it = e.target.closest('.pick');
+      if (!it) return;
+      const r = results[+it.dataset.i];
+      it.style.opacity = '.5';
+      const ok = await window.api.coverApply(ids, r.image);
+      if (ok) { close(); toast('Обложка обновлена'); } else { it.style.opacity = ''; toast('Не удалось скачать картинку'); }
+    });
+    run();
+  });
+}
+
 $('#panel-body').addEventListener('wheel', () => { Lyrics.lastUserScroll = Date.now(); }, { passive: true });
 $('#panel-body').addEventListener('click', (e) => {
   const line = e.target.closest('.line');
@@ -1675,6 +2164,16 @@ $('#btn-lyrics').addEventListener('click', () => setPanel('lyrics'));
 $('#btn-queue').addEventListener('click', () => setPanel('queue'));
 $('#btn-eq').addEventListener('click', openEq);
 $('#btn-mini').addEventListener('click', () => window.api.mini(true));
+$('#btn-panel').addEventListener('click', () => setPanel(S.panel ? null : S.panelTab || 'similar', false));
+$('#np-play').addEventListener('click', () => Player.toggle());
+$('#np-next').addEventListener('click', () => Player.next());
+$('#np-prev').addEventListener('click', () => Player.prev());
+$('#np-shuffle').addEventListener('click', () => Player.setShuffle(!S.settings.shuffle));
+$('#np-repeat').addEventListener('click', () => Player.cycleRepeat());
+$('#np-like').addEventListener('click', () => Player.current?.kind === 'track' && toggleLike(Player.current.id));
+$('#np-cover').addEventListener('click', () => $('#now-cover').click());
+$('#side-now').addEventListener('click', () => setPanel(S.panel ? null : S.panelTab || 'similar', false));
+bindSlider($('#np-seek'), (f) => { seeking = true; const d = audio.duration; if (isFinite(d)) $('#np-cur').textContent = fmtTime(f * d); }, (f) => { seeking = false; const d = audio.duration; if (isFinite(d)) Player.seek(f * d); });
 $('#btn-mute').addEventListener('click', () => { audio.muted = !audio.muted; updateVolume(); });
 $('#now-cover').addEventListener('click', () => {
   const c = Player.current;
@@ -1705,6 +2204,7 @@ document.addEventListener('keydown', (e) => {
   else if (e.ctrlKey && k === 'KeyQ') { e.preventDefault(); setPanel('queue'); }
   else if (e.ctrlKey && k === 'KeyE') { e.preventDefault(); openEq(); }
   else if (e.ctrlKey && k === 'KeyM') { e.preventDefault(); window.api.mini(true); }
+  else if (e.ctrlKey && k === 'KeyP') { e.preventDefault(); $('#btn-panel').click(); }
   else if (e.ctrlKey && k === 'KeyA' && currentList) { e.preventDefault(); currentList.ids.forEach((id) => S.selected.add(id)); currentList.refresh(); }
   else if (e.ctrlKey) return;
   else if (k === 'KeyM') { audio.muted = !audio.muted; updateVolume(); }
@@ -1779,6 +2279,7 @@ const applyTracks = () => {
   if (!['radio'].includes(S.view.name) && !$('#modal-root').children.length) render(true);
   renderNav();
   if (S.panel === 'queue') renderQueuePanel();
+  if (S.panel === 'similar') renderSimilar();
 };
 const applyTracksSoon = debounce(applyTracks, 300);
 window.api.onTracks((list) => {
@@ -1846,7 +2347,14 @@ window.api.onUpdate(applyUpdate);
   document.body.classList.add('platform-' + d.platform);
   for (const st of S.radioFavs) S.stations.set('r:' + st.id, st);
   setTracks(d.tracks);
+  // Новый дизайн: один раз переключаем на светлую «стеклянную» тему, как на макете
+  if ((S.settings.designV || 1) < 2) setSetting({ designV: 2, theme: 'light' });
   applyTheme();
+  const p0 = S.settings.panel;
+  S.panelTab = p0 && p0 !== 'closed' ? p0 : 'similar';
+  S.panel = null;
+  setPanel(p0 === 'closed' ? null : S.panelTab, false);
+  Viz.drawIdle();
   audio.volume = S.settings.volume ?? 0.8;
   updateVolume();
   renderNav();

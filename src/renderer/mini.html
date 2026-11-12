@@ -7,10 +7,10 @@
   <link rel="stylesheet" href="styles.css" />
   <style>
     html, body { background: transparent; }
-    .mini { position: fixed; inset: 6px; border-radius: 16px; background: var(--bg-2); border: 1px solid var(--line); box-shadow: 0 6px 20px rgba(0,0,0,.35); display: flex; align-items: center; gap: 12px; padding: 10px 12px; overflow: hidden; -webkit-app-region: drag; }
+    .mini { position: fixed; inset: 6px; border-radius: 16px; background: var(--glass-strong); border: 1px solid var(--glass-border); box-shadow: 0 6px 20px rgba(0,0,0,.35); display: flex; align-items: center; gap: 12px; padding: 10px 12px; overflow: hidden; -webkit-app-region: drag; }
     .mini .blur { position: absolute; inset: -20px; background-size: cover; background-position: center; filter: blur(30px) saturate(1.4); opacity: .35; z-index: 0; }
     .mini > *:not(.blur) { position: relative; z-index: 1; }
-    .m-cover { width: 84px; height: 84px; border-radius: 10px; background: var(--bg-3) center/cover; flex: none; display: flex; align-items: center; justify-content: center; color: var(--text-3); }
+    .m-cover { width: 84px; height: 84px; border-radius: 10px; background: var(--glass-2) center/cover; flex: none; display: flex; align-items: center; justify-content: center; color: var(--text-3); }
     .m-cover .ic { width: 30px; height: 30px; }
     .m-body { flex: 1; min-width: 0; padding-right: 26px; display: flex; flex-direction: column; gap: 4px; }
     .m-title { font-weight: 600; font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -20,7 +20,7 @@
     .m-controls .play-btn .ic { width: 16px; height: 16px; }
     .m-controls .icon-btn { width: 30px; height: 30px; }
     .m-controls .icon-btn .ic { width: 17px; height: 17px; }
-    .m-bar { height: 3px; background: var(--bg-hover); border-radius: 3px; overflow: hidden; -webkit-app-region: no-drag; cursor: pointer; margin-top: 2px; }
+    .m-bar { height: 3px; background: color-mix(in srgb, var(--text-3) 30%, transparent); border-radius: 3px; overflow: hidden; -webkit-app-region: no-drag; cursor: pointer; margin-top: 2px; }
     .m-bar div { height: 100%; background: var(--accent); width: 0; }
     .m-top { position: absolute; top: 6px; right: 8px; display: flex; gap: 2px; z-index: 2; -webkit-app-region: no-drag; }
     .m-top .icon-btn { width: 24px; height: 24px; border-radius: 6px; }

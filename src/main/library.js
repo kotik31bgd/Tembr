@@ -5,6 +5,7 @@ const crypto = require('crypto');
 const { EventEmitter } = require('events');
 const chokidar = require('chokidar');
 
+const TAG_VERSION = 2;
 const AUDIO_EXT = new Set(['.mp3', '.flac', '.m4a', '.mp4', '.aac', '.ogg', '.oga', '.opus', '.wav', '.wma', '.webm', '.aiff', '.aif']);
 
 let mmPromise = null;
@@ -45,6 +46,15 @@ class Library extends EventEmitter {
     this.coversDir = path.join(dataDir, 'covers');
     fs.mkdirSync(this.coversDir, { recursive: true });
     this.data = this._load();
+    // v1.2: старый поиск обложек мог подставлять чужие картинки — сбрасываем найденные им обложки
+    if (this.data.coverAlgo !== 2) {
+      for (const t of Object.values(this.data.tracks)) {
+        if (t.coverSource === 'online' || t.coverSource === 'local') { t.cover = null; t.coverSource = null; }
+      }
+      this.data.coverLookup = {};
+      this.data.coverAlgo = 2;
+    }
+    this.data.lyricsOverride ||= {};
     this.watcher = null;
     this.saveTimer = null;
     this.changeTimer = null;
@@ -195,7 +205,7 @@ class Library extends EventEmitter {
     try { st = await fs.promises.stat(p); } catch { return null; }
     const id = trackId(p);
     const existing = this.data.tracks[id];
-    if (skipIfUnchanged && existing && existing.mtime === st.mtimeMs) return existing;
+    if (skipIfUnchanged && existing && existing.mtime === st.mtimeMs && existing.tagv === TAG_VERSION) return existing;
     const t = await this._readTags(p, st, existing);
     if (t) {
       this.data.tracks[id] = t;
@@ -206,13 +216,15 @@ class Library extends EventEmitter {
 
   async _readTags(p, st, existing) {
     const base = path.basename(p, path.extname(p));
+    let coverSource = null;
     let title = base, artist = '', album = '', albumArtist = '', year = null, genre = '', trackNo = null, disc = null, duration = 0, cover = null, lyrics = '', bitrate = 0, sampleRate = 0, codec = '';
     try {
       const { parseFile } = await mm();
       const meta = await parseFile(p, { duration: false, skipCovers: false });
       const c = meta.common;
       if (c.title) title = c.title;
-      artist = c.artist || (c.artists && c.artists.join(', ')) || '';
+      const artists = [...new Set((c.artists || []).map((x) => String(x).trim()).filter(Boolean))];
+      artist = artists.length > 1 ? artists.join(', ') : (c.artist || artists[0] || '');
       album = c.album || '';
       albumArtist = c.albumartist || '';
       year = c.year || null;
@@ -228,7 +240,7 @@ class Library extends EventEmitter {
         lyrics = typeof l === 'string' ? l : (l.text || (l.syncText || []).map((s) => s.text).join('\n'));
       }
       const pic = c.picture && (c.picture.find((x) => /front/i.test(x.type || '')) || c.picture[0]);
-      if (pic && pic.data) cover = this._saveCover(Buffer.from(pic.data), pic.format);
+      if (pic && pic.data) { cover = this._saveCover(Buffer.from(pic.data), pic.format); coverSource = 'embedded'; }
     } catch (e) {
       // Теги прочитать не удалось — используем имя файла
     }
@@ -238,16 +250,27 @@ class Library extends EventEmitter {
       if (m.length >= 2) { artist = m[0].trim(); title = m.slice(1).join(' - ').trim(); }
       else title = base.replace(/^\d{1,3}[\s.\-_]+/, '');
     }
-    // Если обложка не встроена — ищем cover.jpg / folder.jpg рядом
-    if (!cover) cover = this._folderCover(path.dirname(p));
-    if (!cover && existing && existing.cover && existing.coverSource === 'online') cover = existing.cover;
+    // Файл .lrc рядом с треком (тот же путь, расширение .lrc) — синхронный текст
+    try {
+      const lrc = p.slice(0, -path.extname(p).length) + '.lrc';
+      if (fs.existsSync(lrc)) lyrics = fs.readFileSync(lrc, 'utf8').replace(/^\uFEFF/, '');
+    } catch {}
+    // Обложка, выбранная вручную, важнее всего
+    if (existing && existing.coverSource === 'manual' && existing.cover && fs.existsSync(existing.cover)) {
+      cover = existing.cover; coverSource = 'manual';
+    }
+    // Если обложка не встроена — cover.jpg / folder.jpg рядом (только для треков с альбомом)
+    if (!cover && album) { cover = this._folderCover(path.dirname(p)); if (cover) coverSource = 'folder'; }
+    if (!cover && existing && existing.cover && existing.coverSource === 'online') { cover = existing.cover; coverSource = 'online'; }
     return {
       id: trackId(p),
       path: path.resolve(p),
       title, artist, album, albumArtist, year, genre, trackNo, disc, duration,
       bitrate, sampleRate, codec, lyrics,
       cover,
-      coverSource: cover ? (existing && existing.coverSource === 'online' && cover === existing.cover ? 'online' : 'local') : null,
+      coverSource,
+      noAutoCover: existing ? !!existing.noAutoCover : false,
+      tagv: TAG_VERSION,
       size: st.size,
       mtime: st.mtimeMs,
       addedAt: existing ? existing.addedAt : Date.now(),
@@ -260,8 +283,7 @@ class Library extends EventEmitter {
     let found = null;
     try {
       const names = fs.readdirSync(dir);
-      const pick = names.find((n) => /^(cover|folder|front|album|albumart)\.(jpe?g|png|webp)$/i.test(n)) ||
-        names.find((n) => /^albumart.*\.(jpe?g|png)$/i.test(n));
+      const pick = names.find((n) => /^(cover|folder|front)\.(jpe?g|png|webp)$/i.test(n));
       if (pick) found = this._saveCover(fs.readFileSync(path.join(dir, pick)), path.extname(pick));
     } catch {}
     this._dirCoverCache.set(dir, found);
@@ -276,14 +298,28 @@ class Library extends EventEmitter {
     return file;
   }
 
-  setOnlineCover(trackIds, buf, format) {
+  // source: 'online' — только трекам без обложки; 'manual' — заменить всегда
+  setTrackCover(trackIds, buf, format, source = 'online') {
     const file = this._saveCover(buf, format);
     for (const id of trackIds) {
       const t = this.data.tracks[id];
-      if (t && !t.cover) { t.cover = file; t.coverSource = 'online'; }
+      if (!t) continue;
+      if (source === 'manual' || !t.cover) { t.cover = file; t.coverSource = source; t.noAutoCover = false; }
     }
     this._changed();
     return file;
+  }
+
+  // Убрать обложку (auto=true — разрешить снова искать её автоматически)
+  resetCover(trackIds, auto) {
+    for (const id of trackIds) {
+      const t = this.data.tracks[id];
+      if (!t) continue;
+      if (t.coverSource === 'embedded' && auto) continue; // встроенную в файл не трогаем
+      t.cover = null; t.coverSource = null; t.noAutoCover = !auto;
+    }
+    if (auto) this.data.coverLookup = {};
+    this._changed();
   }
 
   removeFile(p) {

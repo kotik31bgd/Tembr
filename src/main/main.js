@@ -293,15 +293,48 @@ function setupIpc() {
     if (patch.autoCovers && !before.autoCovers) coverQueue.run();
   });
 
+  const lyricsKey = (t) => `${t.artist}|${t.title}`.toLowerCase();
   ipcMain.handle('lyrics:get', async (_e, t) => {
-    const key = `${t.artist}|${t.title}`.toLowerCase();
+    const ov = t.id && lib.data.lyricsOverride[t.id];
+    if (ov) return { ...ov, source: ov.source || 'вручную', manual: true };
+    const key = lyricsKey(t);
     const cache = lib.data.lyricsCache;
     if (cache[key] && (cache[key].synced || cache[key].plain || cache[key].instrumental)) return cache[key];
     if (cache[key] && cache[key].none && Date.now() - cache[key].at < 3 * 24 * 3600 * 1000) return null;
     const r = await online.lyrics(t);
+    if (r && r.retry) return r; // нет сети — не запоминаем
     cache[key] = r || { none: true, at: Date.now() };
     lib.save();
     return r;
+  });
+  ipcMain.handle('lyrics:search', (_e, q) => online.lyricsSearch(q));
+  // Сохранить текст для конкретного трека (из поиска или вставленный вручную); null — убрать
+  ipcMain.handle('lyrics:set', (_e, id, data) => {
+    if (data && (data.synced || data.plain)) lib.data.lyricsOverride[id] = { synced: data.synced || null, plain: data.plain || null, source: data.source || 'вручную' };
+    else delete lib.data.lyricsOverride[id];
+    lib.save();
+    return true;
+  });
+
+  // ---------- Обложки вручную ----------
+  ipcMain.handle('cover:search', (_e, q) => online.coverSearch(q));
+  ipcMain.handle('cover:apply', async (_e, ids, url) => {
+    const img = /^https:/.test(url) ? await online.fetchImage(url) : null;
+    if (!img) return false;
+    lib.setTrackCover(ids, img.buf, img.format, 'manual');
+    return true;
+  });
+  ipcMain.handle('cover:file', async (_e, ids) => {
+    const r = await dialog.showOpenDialog(mainWin, { title: 'Выберите картинку для обложки', properties: ['openFile'], filters: [{ name: 'Изображения', extensions: ['jpg', 'jpeg', 'png', 'webp'] }] });
+    if (r.canceled || !r.filePaths[0]) return false;
+    const buf = await fs.promises.readFile(r.filePaths[0]);
+    lib.setTrackCover(ids, buf, path.extname(r.filePaths[0]), 'manual');
+    return true;
+  });
+  ipcMain.handle('cover:reset', (_e, ids, auto) => {
+    lib.resetCover(ids, !!auto);
+    if (auto) coverQueue.run();
+    return true;
   });
 
   ipcMain.handle('radio:search', (_e, q) => online.radioSearch(q));
