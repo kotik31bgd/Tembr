@@ -56,9 +56,9 @@ class Library extends EventEmitter {
     }
     this.data.lyricsOverride ||= {};
     // v1.3: поиск текстов научился находить синхронные версии и Genius — перепроверим ненайденные и несинхронные
-    if (this.data.lyricsAlgo !== 2) {
+    if ((this.data.lyricsAlgo || 0) < 3) {
       for (const [k, v] of Object.entries(this.data.lyricsCache || {})) if (!v || v.none || !v.synced) delete this.data.lyricsCache[k];
-      this.data.lyricsAlgo = 2;
+      this.data.lyricsAlgo = 3;
     }
     this.watcher = null;
     this.saveTimer = null;

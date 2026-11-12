@@ -167,11 +167,16 @@ async function lyricsInner({ title, artist, album, duration }) {
   // Поиск с проверкой: исполнитель и название должны совпадать, длительность — быть близкой
   const seen = new Set();
   const cands = [];
-  for (const q of [{ track_name: t, artist_name: a }, { q: `${a} ${t}`.trim() }, { q: `${artist || ''} ${t}`.trim() }, { track_name: t }]) {
+  const matches = (x) => Math.max(sim(t, x.trackName), sim(t, stripArtistPrefix(x.trackName, a))) >= 0.85
+    && (!a || Math.max(artistSim(a, x.artistName), artistSim(artist, x.artistName)) >= 0.75)
+    && (!duration || !x.duration || Math.abs(duration - x.duration) <= 15);
+  // Последний запрос — только исполнитель: так находятся треки, записанные другим алфавитом («aromat» / «аромат»)
+  for (const q of [{ track_name: t, artist_name: a }, { q: `${a} ${t}`.trim() }, { q: `${artist || ''} ${t}`.trim() }, { track_name: t }, { q: a }]) {
+    if (q.q === '') continue;
     if (!a && q.artist_name !== undefined) continue;
     const list = await getJson('https://lrclib.net/api/search?' + new URLSearchParams(q));
     for (const x of Array.isArray(list) ? list : []) if (!seen.has(x.id) && good(x)) { seen.add(x.id); cands.push(x); }
-    if (cands.filter((x) => x.syncedLyrics).length >= 5) break;
+    if (cands.some((x) => x.syncedLyrics && matches(x))) break; // нужный трек с таймингами уже есть
   }
   let best = null, bestScore = 0;
   for (const x of cands) {
@@ -217,9 +222,11 @@ function pack(r) {
 }
 
 // ---------- Сравнение названий ----------
+// Кириллица → латиница, чтобы «аромат» и «aromat» считались одним названием
+const TRANSLIT = { а: 'a', б: 'b', в: 'v', г: 'g', д: 'd', е: 'e', ё: 'e', ж: 'zh', з: 'z', и: 'i', й: 'y', к: 'k', л: 'l', м: 'm', н: 'n', о: 'o', п: 'p', р: 'r', с: 's', т: 't', у: 'u', ф: 'f', х: 'h', ц: 'ts', ч: 'ch', ш: 'sh', щ: 'sch', ъ: '', ы: 'y', ь: '', э: 'e', ю: 'yu', я: 'ya', і: 'i', ї: 'i', є: 'e', ґ: 'g', ў: 'u' };
+const translit = (s) => s.replace(/[а-яёіїєґў]/g, (c) => TRANSLIT[c] ?? c);
 function norm(s) {
-  return String(s || '')
-    .toLowerCase()
+  return translit(String(s || '').toLowerCase())
     .normalize('NFKD').replace(/[\u0300-\u036f]/g, '')
     .replace(/[\(\[][^\)\]]*[\)\]]/g, ' ')
     .replace(/\s(feat|ft|featuring|prod)\.?\s.*$/i, ' ')
