@@ -55,6 +55,7 @@ class Library extends EventEmitter {
       this.data.coverAlgo = 2;
     }
     this.data.lyricsOverride ||= {};
+    this.data.remoteTracks ||= {}; // треки из Audius, добавленные в библиотеку (без файла)
     this.data.artistImages ||= {};
     // Разделы SoundCloud и «Архив» убраны — удаляем их данные (в т.ч. сохранённые ключи)
     delete this.data.scKeys;
@@ -114,7 +115,20 @@ class Library extends EventEmitter {
   }
 
   tracksList() {
-    return Object.values(this.data.tracks);
+    return [...Object.values(this.data.tracks), ...Object.values(this.data.remoteTracks)];
+  }
+
+  addRemote(t) {
+    if (!t || !/^au:/.test(t.id)) return false;
+    this.data.remoteTracks[t.id] = { ...t, addedAt: (this.data.remoteTracks[t.id] || {}).addedAt || Date.now() };
+    this._changed();
+    return true;
+  }
+  removeRemote(id) {
+    if (!this.data.remoteTracks[id]) return false;
+    delete this.data.remoteTracks[id];
+    this._changed();
+    return true;
   }
 
   // ---------- Папки ----------

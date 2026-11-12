@@ -8,7 +8,8 @@ const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => Array.from(r.querySelectorAll(s));
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const fileUrl = (p) => 'tmedia://file/' + encodeURIComponent(p).replace(/['()*!]/g, (c) => '%' + c.charCodeAt(0).toString(16).toUpperCase());
-const bg = (p) => (p ? `background-image:url('${fileUrl(p)}')` : '');
+const coverSrc = (p) => (p ? (/^https?:/.test(p) ? String(p).replace(/'/g, '%27') : fileUrl(p)) : null);
+const bg = (p) => (p ? `background-image:url('${coverSrc(p)}')` : '');
 const collator = new Intl.Collator('ru', { numeric: true, sensitivity: 'base' });
 const cmp = (a, b) => collator.compare(a || '', b || '');
 const uid = () => Math.random().toString(36).slice(2, 10) + Date.now().toString(36).slice(-4);
@@ -82,6 +83,8 @@ const S = {
   playlists: [],
   stats: {},
   radioFavs: [],
+  ext: new Map(), // треки Audius, которые ещё не добавлены в библиотеку
+  auTrending: null,
   artistImages: {},
   settings: {},
   dataDir: '',
@@ -99,6 +102,18 @@ const S = {
   panel: null, // 'lyrics' | 'queue' | null
   idx: null, // кэш альбомов/исполнителей
 };
+
+// Трек по id: из библиотеки или найденный в Audius
+const getTrack = (id) => S.tracks.get(id) || S.ext.get(id);
+const isAu = (t) => t && t.remote === 'audius';
+const inLibrary = (id) => S.tracks.has(id);
+async function ensureInLibrary(ids) {
+  const add = ids.filter((id) => !S.tracks.has(id) && S.ext.has(id)).map((id) => S.ext.get(id));
+  if (!add.length) return;
+  await window.api.auAdd(add);
+  for (const t of add) { S.tracks.set(t.id, { ...t, addedAt: Date.now() }); }
+  S.idx = null;
+}
 
 function index() {
   if (S.idx) return S.idx;
@@ -142,6 +157,10 @@ function setSetting(patch) {
 }
 
 function toggleLike(id, force) {
+  if (!S.tracks.has(id) && S.ext.has(id)) {
+    ensureInLibrary([id]).then(() => { toast('Добавлено в библиотеку и в «Избранное»'); toggleLike(id, true); renderNav(); });
+    return;
+  }
   const s = stat(id);
   s.liked = force ?? !s.liked;
   s.likedAt = s.liked ? Date.now() : 0;
@@ -226,7 +245,7 @@ const Player = {
   entry(id) { return { uid: uid(), id }; },
 
   playList(ids, start = 0, opts = {}) {
-    ids = ids.filter((id) => S.tracks.has(id) || id.startsWith('r:'));
+    ids = ids.filter((id) => S.tracks.has(id) || S.ext.has(id) || id.startsWith('r:'));
     if (!ids.length) return;
     if (opts.shuffle !== undefined && opts.shuffle !== S.settings.shuffle) setSetting({ shuffle: opts.shuffle });
     this.base = ids.map((id) => this.entry(id));
@@ -320,7 +339,7 @@ const Player = {
       this.current = { kind: 'radio', id: e.id, station: st };
       audio.src = st.url;
     } else {
-      const t = S.tracks.get(e.id);
+      const t = getTrack(e.id);
       if (!t) { // файл исчез из библиотеки — пропускаем
         this.queue.splice(this.index, 1);
         this.base = this.base.filter((x) => x !== e);
@@ -328,7 +347,7 @@ const Player = {
         return this.load(autoplay);
       }
       this.current = { kind: 'track', id: t.id, track: t };
-      audio.src = fileUrl(t.path);
+      audio.src = t.remote ? t.url : fileUrl(t.path);
       if (startTime) {
         const seekOnce = () => { audio.currentTime = startTime; };
         audio.addEventListener('loadedmetadata', seekOnce, { once: true });
@@ -476,7 +495,7 @@ const Player = {
       shuffle: S.settings.shuffle,
       repeat: S.settings.repeat,
       track: c ? (c.kind === 'track'
-        ? { id: c.id, title: c.track.title, artist: artistOf(c.track), cover: c.track.cover ? fileUrl(c.track.cover) : null }
+        ? { id: c.id, title: c.track.title, artist: artistOf(c.track), cover: coverSrc(c.track.cover) }
         : { id: c.id, title: c.station.name, artist: 'Интернет-радио', cover: c.station.favicon || null }) : null,
     });
   },
@@ -554,7 +573,8 @@ function updateNowPlaying() {
     const t = c.track;
     title = t.title;
     artistHtml = `${artistLinks(t.artist)}${t.album ? ` · <span class="link" data-album="${esc(albumKey(t))}">${esc(t.album)}</span>` : ''}`;
-    coverUrl = t.cover ? fileUrl(t.cover) : null;
+    coverUrl = coverSrc(t.cover);
+    if (isAu(t)) artistHtml = `${t.auUser ? `<span class="link" data-au-user="${esc(t.auUser.id)}">${esc(t.artist)}</span>` : esc(t.artist)} · <span class="au-badge">Audius</span>`;
   } else if (c) {
     const st = c.station;
     title = st.name;
@@ -576,6 +596,7 @@ function updateNowPlaying() {
     b.innerHTML = icon(liked ? 'heartFill' : 'heart');
   }
   setAmbient(c && !contain ? coverUrl : null);
+  markAuPlaying();
   if (!c) return;
   updateMediaSession();
   updateControls();
@@ -678,7 +699,7 @@ const ROW = 48;
 let currentList = null;
 
 function sortedTracks(ids, mode) {
-  const arr = ids.map((id) => S.tracks.get(id)).filter(Boolean);
+  const arr = ids.map((id) => getTrack(id)).filter(Boolean);
   const byAlbum = (a, b) => cmp(albumArtistOf(a), albumArtistOf(b)) || cmp(a.album, b.album) || (a.disc || 0) - (b.disc || 0) || (a.trackNo || 0) - (b.trackNo || 0) || cmp(a.title, b.title);
   if (mode === 'default') arr.sort(byAlbum);
   else if (mode === 'album') arr.sort((a, b) => (a.disc || 0) - (b.disc || 0) || (a.trackNo || 0) - (b.trackNo || 0) || cmp(a.title, b.title));
@@ -715,7 +736,7 @@ class TrackList {
   applySort() {
     if (!S.sort) return this.baseIds.slice();
     const f = SORTERS[S.sort.key];
-    const arr = this.baseIds.map((id) => S.tracks.get(id)).filter(Boolean);
+    const arr = this.baseIds.map((id) => getTrack(id)).filter(Boolean);
     arr.sort((a, b) => f(a, b) * S.sort.dir);
     return arr.map((t) => t.id);
   }
@@ -734,7 +755,7 @@ class TrackList {
     let html = '';
     const playingId = Player.current?.id;
     for (let i = a; i < b; i++) {
-      const t = S.tracks.get(this.ids[i]);
+      const t = getTrack(this.ids[i]);
       if (!t) continue;
       const liked = isLiked(t.id);
       const num = this.opts.trackNumbers && t.trackNo && !S.sort ? t.trackNo : i + 1;
@@ -742,7 +763,7 @@ class TrackList {
       const ak = albumKey(t);
       html += `<div class="trow${cls}" data-i="${i}" draggable="true" style="top:${i * ROW}px">
         <div class="c-num"><span class="n">${num}</span>${icon('play', 'pl')}<span class="bars"><span></span><span></span><span></span></span></div>
-        <div class="c-title"><div class="cv${t.cover ? '' : ' nocover'}" style="${bg(t.cover)}" ${t.cover ? '' : 'title="Найти обложку"'}>${t.cover ? '' : icon('music')}</div><div class="meta"><span class="t ell" title="${esc(t.title)}">${esc(t.title)}</span></div></div>
+        <div class="c-title"><div class="cv${t.cover || t.remote ? '' : ' nocover'}" style="${bg(t.cover)}" ${t.cover || t.remote ? '' : 'title="Найти обложку"'}>${t.cover ? '' : icon('music')}</div><div class="meta"><span class="t ell" title="${esc(t.title)}">${esc(t.title)}${t.remote ? '<span class="src-au">AUDIUS</span>' : ''}</span></div></div>
         <div class="ell">${artistLinks(t.artist)}</div>
         <div class="c-album ell">${ak ? `<span class="link" data-album="${esc(ak)}">${esc(t.album)}</span>` : '<span style="color:var(--text-3)">—</span>'}</div>
         <div class="c-like"><button class="${liked ? 'on' : ''}" data-like title="${liked ? 'Убрать из любимых' : 'В любимые'}">${icon(liked ? 'heartFill' : 'heart')}</button></div>
@@ -783,7 +804,7 @@ class TrackList {
       const hit = this.idAt(e.target);
       if (!hit) return;
       if (e.target.closest('[data-like]')) return toggleLike(hit.id);
-      if (e.target.closest('.cv.nocover')) { const tt = S.tracks.get(hit.id); return coverPicker([hit.id], `${primaryArtist(tt)} ${tt.title}`, tt.title); }
+      if (e.target.closest('.cv.nocover')) { const tt = getTrack(hit.id); return coverPicker([hit.id], `${primaryArtist(tt)} ${tt.title}`, tt.title); }
       if (e.target.closest('.link')) return;
       if (e.target.closest('.c-num .pl')) return this.play(hit.i);
       if (e.shiftKey && S.lastSel >= 0) {
@@ -825,7 +846,7 @@ class TrackList {
       const ghost = document.createElement('div');
       ghost.className = 'toast';
       ghost.style.cssText = 'position:fixed;top:-100px';
-      ghost.textContent = ids.length > 1 ? tracksWord(ids.length) : S.tracks.get(ids[0]).title;
+      ghost.textContent = ids.length > 1 ? tracksWord(ids.length) : getTrack(ids[0]).title;
       document.body.appendChild(ghost);
       e.dataTransfer.setDragImage(ghost, 10, 10);
       setTimeout(() => ghost.remove(), 0);
@@ -840,6 +861,8 @@ window.addEventListener('resize', () => currentList?.refresh());
 document.addEventListener('click', (e) => {
   const a = e.target.closest('[data-artist]');
   if (a && a.classList.contains('link')) return navigate({ name: 'artist', key: a.dataset.artist });
+  const au = e.target.closest('[data-au-user]');
+  if (au && au.classList.contains('link')) return navigate({ name: 'auArtist', key: au.dataset.auUser });
   const al = e.target.closest('[data-album]');
   if (al && al.classList.contains('link')) return navigate({ name: 'album', key: al.dataset.album });
 });
@@ -882,7 +905,7 @@ function playlistSubmenu(ids) {
 
 function trackMenu(x, y, ids, list) {
   if (!ids.length) return;
-  const t = S.tracks.get(ids[0]);
+  const t = getTrack(ids[0]);
   const allLiked = ids.every(isLiked);
   const items = [
     { label: ids.length > 1 ? `Воспроизвести (${ids.length})` : 'Воспроизвести', icon: 'play', action: () => (ids.length > 1 ? Player.playList(ids, 0) : list ? list.play(list.ids.indexOf(ids[0])) : Player.playList(ids, 0)) },
@@ -893,7 +916,19 @@ function trackMenu(x, y, ids, list) {
     { label: allLiked ? 'Убрать из любимых' : 'Добавить в любимые', icon: allLiked ? 'heartFill' : 'heart', action: () => ids.forEach((id) => toggleLike(id, !allLiked)) },
   ];
   if (ids.length > 1) items.push('-', { label: 'Обложка для выбранных', icon: 'image', sub: coverSubmenu(ids, `${primaryArtist(t)} ${t.album || t.title}`) });
-  if (ids.length === 1) {
+  if (ids.length === 1 && isAu(t)) {
+    items.push('-');
+    if (t.auUser) items.push({ label: `Исполнитель: ${t.artist}`, icon: 'artist', action: () => navigate({ name: 'auArtist', key: t.auUser.id }) });
+    items.push({ label: 'Текст песни', icon: 'lyrics', sub: () => [
+      { label: 'Найти текст…', icon: 'search', action: () => Lyrics.searchModal(t) },
+      { label: 'Вставить свой текст…', icon: 'paste', action: () => Lyrics.pasteModal(t) },
+    ] });
+    if (t.downloadable) items.push({ label: 'Скачать в папку с музыкой', icon: 'folder', action: () => auDownload(t) });
+    if (t.permalink) items.push({ label: 'Открыть на Audius', icon: 'web', action: () => window.api.openExternal(t.permalink) });
+    items.push('-');
+    if (inLibrary(t.id)) items.push({ label: 'Убрать из библиотеки', icon: 'trash', danger: true, action: () => auRemove([t.id]) });
+    else items.push({ label: 'Добавить в библиотеку', icon: 'add', action: async () => { await ensureInLibrary([t.id]); toast('Добавлено в библиотеку'); render(true); renderNav(); } });
+  } else if (ids.length === 1) {
     items.push('-');
     if (albumKey(t)) items.push({ label: 'Перейти к альбому', icon: 'album', action: () => navigate({ name: 'album', key: albumKey(t) }) });
     const names = trackArtistNames(t);
@@ -971,9 +1006,10 @@ function createPlaylist(ids = []) {
     else navigate({ name: 'playlist', id: p.id });
   });
 }
-function addToPlaylist(pid, ids) {
+async function addToPlaylist(pid, ids) {
   const p = S.playlists.find((x) => x.id === pid);
   if (!p) return;
+  await ensureInLibrary(ids);
   const set = new Set(p.ids);
   const fresh = ids.filter((id) => !set.has(id));
   p.ids.push(...fresh);
@@ -1142,7 +1178,7 @@ function bindPlayActions(view, ids) {
   view.querySelector('[data-act="play"]')?.addEventListener('click', () => Player.playList(currentList ? currentList.ids : ids, 0, { shuffle: false }));
   view.querySelector('[data-act="shuffle"]')?.addEventListener('click', () => Player.playList(ids, 0, { shuffle: true, randomStart: true }));
 }
-const totalDur = (ids) => ids.reduce((s, id) => s + (S.tracks.get(id)?.duration || 0), 0);
+const totalDur = (ids) => ids.reduce((s, id) => s + (getTrack(id)?.duration || 0), 0);
 const summary = (ids) => `${tracksWord(ids.length)} · ${fmtTotal(totalDur(ids))}`;
 
 function emptyLibrary(view) {
@@ -1220,7 +1256,7 @@ const artistItem = (a) => ({
   open: () => navigate({ name: 'artist', key: a.key }), play: () => Player.playList(sortedTracks(a.ids, 'default'), 0), ids: () => sortedTracks(a.ids, 'default'),
   menu: (x, y) => artistMenu(x, y, a),
 });
-const coversOf = (ids, n = 4) => [...new Set(ids.map((id) => S.tracks.get(id)?.cover).filter(Boolean))].slice(0, n);
+const coversOf = (ids, n = 4) => [...new Set(ids.map((id) => getTrack(id)?.cover).filter(Boolean))].slice(0, n);
 const topIds = () => Object.entries(S.stats).filter(([id, s]) => s.plays > 0 && S.tracks.has(id)).sort((a, b) => b[1].plays - a[1].plays || b[1].last - a[1].last).slice(0, 100).map(([id]) => id);
 const historyIds = () => Object.entries(S.stats).filter(([id, s]) => s.last && S.tracks.has(id)).sort((a, b) => b[1].last - a[1].last).slice(0, 200).map(([id]) => id);
 const recentIds = () => sortedTracks(Array.from(S.tracks.keys()), 'added').slice(0, 300);
@@ -1236,7 +1272,7 @@ function heroSlides() {
     return slides;
   }
   const hist = historyIds();
-  const last = hist.length ? S.tracks.get(hist[0]) : null;
+  const last = hist.length ? getTrack(hist[0]) : null;
   let usedKey = null;
   if (last) {
     const ak = albumKey(last);
@@ -1323,6 +1359,7 @@ const VIEWS = {
       const box = document.createElement('div');
       emptyLibrary(box);
       view.appendChild(box);
+      if (S.settings.audius !== false) auTrendingRow(view);
       return;
     }
     const albums = index().albums;
@@ -1330,7 +1367,7 @@ const VIEWS = {
     const seen = new Set();
     const recent = [];
     for (const id of historyIds()) {
-      const t = S.tracks.get(id);
+      const t = getTrack(id);
       const ak = albumKey(t);
       const k = ak || 't:' + id;
       if (seen.has(k)) continue;
@@ -1351,13 +1388,14 @@ const VIEWS = {
     ];
     rowSection(view, 'Подборки для вас', mixes, { wide: true });
 
-    const newAlbums = Array.from(albums.values()).map((a) => ({ a, t: Math.max(...a.ids.map((id) => S.tracks.get(id)?.addedAt || 0)) })).sort((x, y) => y.t - x.t).slice(0, 14).map((x) => albumItem(x.a));
+    const newAlbums = Array.from(albums.values()).map((a) => ({ a, t: Math.max(...a.ids.map((id) => getTrack(id)?.addedAt || 0)) })).sort((x, y) => y.t - x.t).slice(0, 14).map((x) => albumItem(x.a));
     rowSection(view, 'Новые альбомы в библиотеке', newAlbums, { more: () => navigate({ name: 'albums' }) });
 
     const artists = Array.from(index().artists.values()).sort((a, b) => b.ids.length - a.ids.length).slice(0, 14).map(artistItem);
     rowSection(view, 'Исполнители', artists, { more: () => navigate({ name: 'artists' }) });
 
     if (S.playlists.length) rowSection(view, 'Ваши плейлисты', S.playlists.map(playlistItem), { more: () => navigate({ name: 'playlists' }) });
+    if (S.settings.audius !== false) auTrendingRow(view);
   },
 
   search(view) {
@@ -1471,6 +1509,8 @@ const VIEWS = {
   },
 
   radio(view) { renderRadio(view); },
+  auArtist(view, v) { renderAuArtist(view, v.key); },
+  auPlaylist(view, v) { renderAuPlaylist(view, v.key); },
   settings(view) { renderSettings(view); },
 };
 
@@ -1575,7 +1615,7 @@ function renderSearch(view) {
   }
   const albums = Array.from(index().albums.values()).filter((a) => match(`${a.name} ${a.artist}`)).slice(0, 12);
   const artists = Array.from(index().artists.values()).filter((a) => match(a.name)).slice(0, 12);
-  view.insertAdjacentHTML('beforeend', head({ kicker: 'Поиск', title: `«${S.search.trim()}»`, art: false, compact: true, sub: ids.length || albums.length || artists.length ? `Найдено: ${tracksWord(ids.length)}` : 'Ничего не найдено', actions: ids.length ? playActions() : '' }));
+  view.insertAdjacentHTML('beforeend', head({ kicker: 'Поиск', title: `«${S.search.trim()}»`, art: false, compact: true, sub: ids.length || albums.length || artists.length ? `В библиотеке: ${tracksWord(ids.length)}` : (S.settings.audius !== false ? 'В вашей библиотеке ничего нет — ниже результаты из Audius' : 'Ничего не найдено'), actions: ids.length ? playActions() : '' }));
   const sorted = sortedTracks(ids, 'default');
   bindPlayActions(view, sorted);
   if (artists.length) {
@@ -1590,6 +1630,7 @@ function renderSearch(view) {
     view.insertAdjacentHTML('beforeend', '<div class="section-title">Треки</div>');
     currentList = new TrackList(view, sorted);
   }
+  if (S.settings.audius !== false) auSearchSection(view, S.search.trim());
 }
 const onSearch = debounce(() => { S.selected.clear(); render(false); }, 180);
 $('#search').addEventListener('input', (e) => {
@@ -1605,6 +1646,140 @@ $('#search').addEventListener('keydown', (e) => {
   if (e.key === 'Enter' && currentList && currentList.ids.length) Player.playList(currentList.ids, 0);
 });
 $('#search-clear').addEventListener('click', () => { $('#search').value = ''; S.search = ''; $('.search').classList.remove('has-text'); render(false); });
+
+// =====================================================================
+//  Audius: поиск, тренды, исполнители и плейлисты — прямо внутри разделов
+// =====================================================================
+function auRegister(tracks) {
+  for (const t of tracks) if (!S.tracks.has(t.id)) S.ext.set(t.id, t);
+  return tracks.map((t) => (S.tracks.has(t.id) ? S.tracks.get(t.id) : t));
+}
+function auRowHtml(t, i) {
+  const liked = isLiked(t.id);
+  return `<div class="au-row" data-i="${i}" data-id="${esc(t.id)}">
+    <div class="c-num"><span class="n">${i + 1}</span>${icon('play', 'pl')}<span class="bars"><span></span><span></span><span></span></span></div>
+    <div class="au-main"><div class="cv" style="${bg(t.cover)}">${t.cover ? '' : icon('music')}</div><div class="meta"><div class="t ell" title="${esc(t.title)}">${esc(t.title)}</div><div class="a ell">${t.auUser ? `<span class="link" data-au-user="${esc(t.auUser.id)}">${esc(t.artist)}</span>` : esc(t.artist)}${t.genre ? ' · ' + esc(t.genre) : ''}</div></div></div>
+    <div class="c-dur">${fmtTime(t.duration)}</div>
+    <div class="au-acts">${t.downloadable ? `<button class="icon-btn small" data-dl title="Скачать в папку с музыкой (исполнитель разрешил)">${icon('folder')}</button>` : ''}<button class="icon-btn small${liked ? ' active' : ''}" data-like title="${liked ? 'Убрать из любимых' : 'В библиотеку и в «Избранное»'}">${icon(liked ? 'heartFill' : 'heart')}</button><button class="icon-btn small" data-more title="Ещё">${icon('more')}</button></div>
+  </div>`;
+}
+function auList(container, tracks) {
+  tracks = auRegister(tracks);
+  const el = document.createElement('div');
+  el.className = 'tlist au-list';
+  el.innerHTML = tracks.map(auRowHtml).join('');
+  container.appendChild(el);
+  const ids = tracks.map((t) => t.id);
+  el.addEventListener('click', (e) => {
+    const row = e.target.closest('.au-row');
+    if (!row || e.target.closest('.link')) return;
+    const i = +row.dataset.i, t = tracks[i];
+    if (e.target.closest('[data-like]')) {
+      toggleLike(t.id);
+      setTimeout(() => { const liked = isLiked(t.id); const b = row.querySelector('[data-like]'); b.classList.toggle('active', liked); b.innerHTML = icon(liked ? 'heartFill' : 'heart'); }, 300);
+      return;
+    }
+    if (e.target.closest('[data-dl]')) return auDownload(t);
+    if (e.target.closest('[data-more]')) { const r = e.target.closest('[data-more]').getBoundingClientRect(); return trackMenu(r.left, r.bottom, [t.id]); }
+    if (Player.current?.id === t.id) return Player.toggle();
+    Player.playList(ids, i);
+  });
+  el.addEventListener('contextmenu', (e) => {
+    const row = e.target.closest('.au-row');
+    if (!row) return;
+    e.preventDefault();
+    trackMenu(e.clientX, e.clientY, [tracks[+row.dataset.i].id]);
+  });
+  markAuPlaying();
+  return el;
+}
+function markAuPlaying() {
+  const id = Player.current?.id;
+  $$('.au-row').forEach((r) => r.classList.toggle('playing', r.dataset.id === id));
+}
+async function auDownload(t) {
+  toast(`Скачиваю «${t.title}»…`);
+  const r = await window.api.auDownload({ id: t.id, auId: t.auId, title: t.title, artist: t.artist, downloadable: t.downloadable });
+  toast(r.ok ? 'Сохранено в папку с музыкой — трек теперь в библиотеке как файл' : 'Не удалось скачать: ' + r.error);
+}
+async function auRemove(ids) {
+  await window.api.auRemove(ids);
+  for (const id of ids) { const t = S.tracks.get(id); if (t) { S.tracks.delete(id); S.ext.set(id, t); } }
+  S.idx = null;
+  toast('Убрано из библиотеки');
+  render(true);
+  renderNav();
+}
+
+async function auSearchSection(view, q) {
+  const sec = document.createElement('div');
+  sec.className = 'au-section';
+  sec.innerHTML = `<div class="section-title"><span>${icon('globe')} Audius</span><small>ищу…</small></div>`;
+  view.appendChild(sec);
+  const r = await window.api.auSearch(q);
+  if (!sec.isConnected || S.search.trim() !== q) return;
+  if (!r) { sec.innerHTML = `<div class="section-title"><span>Audius</span><small>сервис недоступен</small></div>`; return; }
+  const tracks = r.tracks.filter((t) => !S.tracks.has(t.id));
+  if (!tracks.length && !r.users.length && !r.playlists.length) { sec.innerHTML = `<div class="section-title"><span>Audius</span><small>ничего не найдено</small></div>`; return; }
+  sec.innerHTML = '';
+  if (tracks.length) {
+    sec.insertAdjacentHTML('beforeend', `<div class="section-title"><span>Треки на Audius</span><small>играют целиком · ♡ — добавить в библиотеку</small></div>`);
+    auList(sec, tracks.slice(0, 20));
+  }
+  if (r.users.length) rowSection(sec, 'Исполнители на Audius', r.users.map((u) => ({ title: u.name, sub: tracksWord(u.tracks), cover: u.photo, icon: 'artist', round: true, open: () => navigate({ name: 'auArtist', key: u.id }) })));
+  if (r.playlists.length) rowSection(sec, 'Плейлисты на Audius', r.playlists.map((p) => ({ title: p.name, sub: [p.user, tracksWord(p.tracks)].filter(Boolean).join(' · '), cover: p.cover, icon: 'playlist', open: () => navigate({ name: 'auPlaylist', key: p.id }) })));
+}
+
+async function auTrendingRow(view) {
+  const sec = document.createElement('div');
+  view.appendChild(sec);
+  if (!S.auTrending || Date.now() - S.auTrending.at > 30 * 60 * 1000) {
+    const list = await window.api.auTrending('', 'week');
+    if (!list) return;
+    S.auTrending = { at: Date.now(), list };
+  }
+  if (!sec.isConnected) return;
+  const tracks = auRegister(S.auTrending.list.slice(0, 20));
+  const ids = tracks.map((t) => t.id);
+  rowSection(sec, 'В тренде на Audius', tracks.map((t, i) => ({ title: t.title, sub: t.artist, cover: t.cover, icon: 'music', play: () => Player.playList(ids, i), ids: () => [t.id] })));
+}
+
+async function renderAuArtist(view, id) {
+  view.innerHTML = '<div class="panel-empty" style="padding:80px"><div class="spinner" style="margin:0 auto 14px"></div>Загружаю…</div>';
+  const u = await window.api.auUser(id);
+  if (!(S.view.name === 'auArtist' && S.view.key === id)) return;
+  view.innerHTML = '';
+  if (!u) return (view.innerHTML = '<div class="empty"><h2>Не удалось загрузить исполнителя</h2><p>Проверьте подключение к интернету.</p></div>');
+  const tracks = auRegister(u.tracks);
+  view.insertAdjacentHTML('beforeend', head({ kicker: 'Исполнитель · Audius', title: u.name, art: u.photo, artClass: 'round', artIcon: 'artist', banner: u.cover || u.photo || 'grad-6', sub: `${tracksWord(tracks.length)}${u.followers ? ' · ' + plural(u.followers, 'подписчик', 'подписчика', 'подписчиков') : ''}`, actions: tracks.length ? playActions(`<button class="circle-btn ghost-light" id="au-open" title="Открыть на Audius">${icon('web')}</button>`, true) : '' }));
+  const ids = tracks.map((t) => t.id);
+  bindPlayActions(view, ids);
+  view.querySelector('#au-open')?.addEventListener('click', () => window.api.openExternal('https://audius.co/' + u.handle));
+  view.insertAdjacentHTML('beforeend', '<div style="height:14px"></div>');
+  if (tracks.length) auList(view, tracks);
+}
+
+async function renderAuPlaylist(view, id) {
+  view.innerHTML = '<div class="panel-empty" style="padding:80px"><div class="spinner" style="margin:0 auto 14px"></div>Загружаю…</div>';
+  const p = await window.api.auPlaylist(id);
+  if (!(S.view.name === 'auPlaylist' && S.view.key === id)) return;
+  view.innerHTML = '';
+  if (!p) return (view.innerHTML = '<div class="empty"><h2>Не удалось загрузить плейлист</h2><p>Проверьте подключение к интернету.</p></div>');
+  const tracks = auRegister(p.tracks);
+  const ids = tracks.map((t) => t.id);
+  view.insertAdjacentHTML('beforeend', head({ kicker: 'Плейлист · Audius', title: p.name, art: p.cover, artIcon: 'playlist', banner: p.cover || 'grad-1', sub: [p.user, tracksWord(tracks.length), fmtTotal(tracks.reduce((a, t) => a + (t.duration || 0), 0))].filter(Boolean).join(' · '), actions: tracks.length ? playActions(`<button class="btn ghost-light round" id="au-save">${icon('add')}Сохранить как мой плейлист</button>`, true) : '' }));
+  bindPlayActions(view, ids);
+  view.querySelector('#au-save')?.addEventListener('click', async () => {
+    await ensureInLibrary(ids);
+    const pl = { id: uid(), name: p.name, ids: ids.slice(), createdAt: Date.now() };
+    S.playlists.push(pl);
+    savePlaylists();
+    renderNav();
+    toast(`Плейлист «${p.name}» сохранён`);
+  });
+  view.insertAdjacentHTML('beforeend', '<div style="height:14px"></div>');
+  if (tracks.length) auList(view, tracks);
+}
 
 // =====================================================================
 //  Радио
@@ -1717,6 +1892,10 @@ function renderSettings(view) {
       <div class="set-row"><div class="l"><b>Акцентный цвет</b></div><div class="swatches">${ACCENTS.map((c) => `<button class="swatch${c === st.accent ? ' on' : ''}" data-accent="${c}" style="background:${c}" title="${c === '#ffffff' ? 'Белый (в светлой теме — чёрный)' : ''}"></button>`).join('')}</div></div>
     </div>
     <div class="set-group">
+      <h3>Audius</h3>
+      <div class="set-row"><div class="l"><b>Музыка из Audius</b><small>Показывать треки Audius в поиске и «В тренде» на главной. Треки играют целиком, ♡ добавляет их в библиотеку</small></div>${sw('audius', st.audius !== false)}</div>
+    </div>
+    <div class="set-group">
       <h3>Поведение</h3>
       <div class="set-row"><div class="l"><b>Сворачивать в трей при закрытии</b><small>Музыка продолжит играть, плеер останется в области уведомлений</small></div>${sw('closeToTray', st.closeToTray)}</div>
     </div>
@@ -1745,6 +1924,7 @@ function renderSettings(view) {
   el.addEventListener('click', async (e) => {
     const t = e.target.closest('button');
     if (!t) return;
+    if (t.dataset.switch === 'audius') { setSetting({ audius: S.settings.audius === false }); t.classList.toggle('on'); return; }
     if (t.dataset.switch) { setSetting({ [t.dataset.switch]: !S.settings[t.dataset.switch] }); t.classList.toggle('on'); return; }
     if (t.dataset.theme) { setSetting({ theme: t.dataset.theme }); applyTheme(); return render(true); }
     if (t.dataset.accent) { setSetting({ accent: t.dataset.accent }); applyTheme(); return render(true); }
@@ -1878,7 +2058,7 @@ function similarIds(t, n = 20) {
   const ar = index().artists.get(primaryArtist(t).toLowerCase());
   const curAlbum = albumKey(t);
   // Тот же исполнитель, но другие альбомы — в первую очередь
-  if (ar) shuffleArr(ar.ids.filter((id) => albumKey(S.tracks.get(id)) !== curAlbum)).forEach(add);
+  if (ar) shuffleArr(ar.ids.filter((id) => albumKey(getTrack(id)) !== curAlbum)).forEach(add);
   if (t.genre) shuffleArr(Array.from(S.tracks.values()).filter((x) => x.genre && x.genre.toLowerCase() === t.genre.toLowerCase()).map((x) => x.id)).forEach((id) => out.length < n && add(id));
   if (ar) ar.ids.forEach((id) => out.length < n && add(id));
   if (out.length < 6) shuffleArr(likedIds().slice()).forEach((id) => out.length < 10 && add(id));
@@ -1903,7 +2083,7 @@ function renderSimilar(force) {
     : `<div class="panel-empty">${icon('sparkle')}Похожих треков в библиотеке пока нет.<br/><small style="color:var(--text-3)">Чем больше музыки — тем точнее подборка.</small></div>`;
 }
 function simItem(id) {
-  const t = S.tracks.get(id);
+  const t = getTrack(id);
   if (!t) return '';
   return `<div class="q-item" data-sim="${esc(id)}"><div class="cv" style="${bg(t.cover)}">${t.cover ? '' : icon('music')}</div><div class="meta"><div class="t ell">${esc(t.title)}</div><div class="a ell">${esc(artistOf(t))}</div></div><button class="icon-btn small add" data-add title="Добавить в очередь">${icon('add')}</button></div>`;
 }
@@ -2194,7 +2374,7 @@ function qItemHtml(e, qi, current) {
     const st = S.stations.get(e.id);
     return `<div class="q-item${current ? ' current' : ''}" data-qi="${qi}"><div class="cv">${icon('radio')}</div><div class="meta"><div class="t ell">${esc(st?.name)}</div><div class="a ell">Интернет-радио</div></div></div>`;
   }
-  const t = S.tracks.get(e.id);
+  const t = getTrack(e.id);
   if (!t) return '';
   return `<div class="q-item${current ? ' current' : ''}" data-qi="${qi}" draggable="${!current}"><div class="cv" style="${bg(t.cover)}">${t.cover ? '' : icon('music')}</div><div class="meta"><div class="t ell">${esc(t.title)}</div><div class="a ell">${esc(artistOf(t))}</div></div>${current ? '' : `<button class="icon-btn small rm" data-rm title="Убрать из очереди">${icon('close')}</button>`}</div>`;
 }
@@ -2275,6 +2455,7 @@ bindSlider($('#np-seek'), (f) => { seeking = true; const d = audio.duration; if 
 $('#btn-mute').addEventListener('click', () => { audio.muted = !audio.muted; updateVolume(); });
 $('#now-cover').addEventListener('click', () => {
   const c = Player.current;
+  if (c?.kind === 'track' && isAu(c.track)) return c.track.auUser && navigate({ name: 'auArtist', key: c.track.auUser.id });
   if (c?.kind === 'track' && !c.track.cover) return coverPicker([c.id], `${primaryArtist(c.track)} ${c.track.title}`, c.track.title);
   if (c?.kind === 'track' && albumKey(c.track)) navigate({ name: 'album', key: albumKey(c.track) });
   else if (c?.kind === 'radio') navigate({ name: 'radio' });
@@ -2364,7 +2545,7 @@ function setTracks(list) {
   S.tracks = new Map(list.map((t) => [t.id, t]));
   S.idx = null;
   if (Player.current?.kind === 'track') {
-    const t = S.tracks.get(Player.current.id);
+    const t = getTrack(Player.current.id);
     if (t) { Player.current.track = t; updateNowPlaying(); }
   }
 }

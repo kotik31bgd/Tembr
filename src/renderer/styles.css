@@ -509,3 +509,28 @@ kbd { font-family: inherit; font-size: 12px; background: var(--glass-2); border:
 .c-title .cv.nocover:hover { color: var(--accent); background-color: var(--accent-soft); }
 .pick-grid.round .pick img { border-radius: 50%; }
 .pick-grid.round .pick { text-align: center; }
+
+/* Audius */
+.au-list { padding: 6px; }
+.au-row { display: grid; grid-template-columns: 44px minmax(0, 1fr) 64px 112px; align-items: center; gap: 12px; height: 58px; padding: 0 12px; border-radius: 12px; color: var(--text-2); cursor: default; }
+.au-row:hover { background: var(--hover); }
+.au-main { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.au-main .cv { width: 42px; height: 42px; border-radius: 9px; flex: none; background: var(--glass-2) center/cover; display: flex; align-items: center; justify-content: center; color: var(--text-3); }
+.au-main .cv .ic { width: 16px; height: 16px; }
+.au-main .meta { min-width: 0; }
+.au-row .t { color: var(--text); font-weight: 500; }
+.au-row .a { font-size: 12px; margin-top: 2px; }
+.au-row .c-num { text-align: center; font-variant-numeric: tabular-nums; color: var(--text-3); display: flex; justify-content: center; }
+.au-row .c-num .ic { display: none; width: 16px; height: 16px; color: var(--text); }
+.au-row:hover .c-num .n { display: none; }
+.au-row:hover .c-num .ic.pl { display: block; }
+.au-row.playing .c-num .n { display: none; }
+.au-row.playing .c-num .bars { display: flex; }
+.au-row.playing:hover .c-num .bars { display: none; }
+.au-row.playing .t { color: var(--accent); }
+.au-acts { display: flex; gap: 2px; justify-content: flex-end; }
+.au-acts .icon-btn.active { color: var(--accent); }
+.au-section .section-title span { display: inline-flex; align-items: center; gap: 8px; }
+.au-section .section-title .ic { width: 18px; height: 18px; color: var(--accent); }
+.au-badge { font-size: 10px; font-weight: 700; letter-spacing: .4px; padding: 2px 6px; border-radius: 5px; background: var(--accent-soft); color: var(--accent); }
+.c-title .src-au { font-size: 9px; font-weight: 700; padding: 1px 5px; border-radius: 4px; background: var(--accent-soft); color: var(--accent); margin-left: 6px; vertical-align: 1px; }

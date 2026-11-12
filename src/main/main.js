@@ -359,6 +359,31 @@ function setupIpc() {
   });
 
   ipcMain.handle('radio:search', (_e, q) => online.radioSearch(q));
+
+  // ---------- Audius ----------
+  ipcMain.handle('au:search', (_e, q) => online.audiusSearch(q));
+  ipcMain.handle('au:trending', (_e, genre, time) => online.audiusTrending(genre, time));
+  ipcMain.handle('au:user', (_e, id) => online.audiusUser(String(id || '')));
+  ipcMain.handle('au:playlist', (_e, id) => online.audiusPlaylist(String(id || '')));
+  ipcMain.handle('au:add', (_e, tracks) => { for (const t of tracks || []) lib.addRemote(t); return true; });
+  ipcMain.handle('au:remove', (_e, ids) => { for (const id of ids || []) lib.removeRemote(id); return true; });
+  ipcMain.handle('au:download', async (_e, t) => {
+    if (!t || !t.downloadable || !t.auId) return { ok: false, error: 'Исполнитель не разрешил скачивание' };
+    const clean = (x) => String(x || '').replace(/[<>:"\/\\|?*\x00-\x1f]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 100) || 'Без названия';
+    let root = lib.data.folders.find((f) => fs.existsSync(f));
+    if (!root) { root = app.getPath('music'); await lib.addFolder(root); }
+    const dir = path.join(root, 'Audius', clean(t.artist));
+    await fs.promises.mkdir(dir, { recursive: true });
+    const dest = path.join(dir, clean(`${t.artist} - ${t.title}`) + '.mp3');
+    try {
+      if (!fs.existsSync(dest)) await online.audiusDownload(t.auId, dest);
+      lib.removeRemote(t.id); // теперь это обычный файл в библиотеке
+      await lib.addPaths([dest]);
+      return { ok: true, path: dest };
+    } catch (e) {
+      return { ok: false, error: String(e.message || e) };
+    }
+  });
   ipcMain.on('radio:click', (_e, id) => online.radioClick(id));
 
   ipcMain.on('shell:showItem', (_e, p) => shell.showItemInFolder(p));

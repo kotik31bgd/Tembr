@@ -490,6 +490,91 @@ class CoverQueue {
   }
 }
 
+// ---------- Audius (открытый API, ключ не нужен) ----------
+// https://docs.audius.org — стриминг целиком разрешён; скачивание — только если его включил исполнитель
+const AUDIUS_APP = 'Tembr';
+let audiusHost = null;
+async function auHost() {
+  if (audiusHost) return audiusHost;
+  const r = await getJson('https://api.audius.co', 8000);
+  const list = (r && Array.isArray(r.data) && r.data.length) ? r.data : ['https://api.audius.co'];
+  audiusHost = list[Math.floor(Math.random() * list.length)];
+  return audiusHost;
+}
+async function auGet(path, params = {}) {
+  const host = await auHost();
+  const q = new URLSearchParams({ ...params, app_name: AUDIUS_APP });
+  const r = await getJson(`${host}/v1${path}?${q}`, 15000);
+  if (!r) audiusHost = null; // в следующий раз попробуем другой узел
+  return r && r.data;
+}
+const auArt = (a, size = '480x480') => (a && (a[size] || a['1000x1000'] || a['480x480'] || a['150x150'])) || null;
+function auTrack(t, host) {
+  if (!t || !t.id || t.is_streamable === false || t.is_stream_gated || t.is_delete || (t.access && t.access.stream === false)) return null;
+  return {
+    id: 'au:' + t.id, auId: t.id, remote: 'audius',
+    title: t.title || 'Без названия', artist: (t.user && t.user.name) || '', auUser: t.user ? { id: t.user.id, name: t.user.name, handle: t.user.handle, photo: auArt(t.user.profile_picture) } : null,
+    album: (t.album_backlink && t.album_backlink.playlist_name) || '', genre: t.genre || '', year: t.release_date ? parseInt(t.release_date, 10) || null : null,
+    duration: t.duration || 0, cover: auArt(t.artwork), plays: t.play_count || 0,
+    url: `${host}/v1/tracks/${encodeURIComponent(t.id)}/stream?app_name=${AUDIUS_APP}`,
+    permalink: t.permalink ? 'https://audius.co' + t.permalink : '',
+    downloadable: !!(t.is_downloadable && !t.is_download_gated && (!t.access || t.access.download !== false)),
+  };
+}
+async function auTracks(path, params) {
+  const host = await auHost();
+  const d = await auGet(path, params);
+  return Array.isArray(d) ? d.map((t) => auTrack(t, host)).filter(Boolean) : null;
+}
+async function audiusSearch(query) {
+  const q = String(query || '').trim();
+  if (!q) return { tracks: [], users: [], playlists: [] };
+  const [tracks, users, playlists] = await Promise.all([
+    auTracks('/tracks/search', { query: q, limit: '30' }),
+    auGet('/users/search', { query: q, limit: '12' }),
+    auGet('/playlists/search', { query: q, limit: '12' }),
+  ]);
+  if (tracks === null && !users && !playlists) return null;
+  return {
+    tracks: tracks || [],
+    users: (users || []).filter((u) => u.track_count > 0).map((u) => ({ id: u.id, name: u.name, handle: u.handle, photo: auArt(u.profile_picture), tracks: u.track_count, followers: u.follower_count || 0 })),
+    playlists: (playlists || []).filter((p) => (p.track_count || 0) > 0).map((p) => ({ id: p.id, name: p.playlist_name, user: p.user && p.user.name, cover: auArt(p.artwork), tracks: p.track_count || 0, album: !!p.is_album })),
+  };
+}
+const audiusTrending = (genre, time = 'week') => auTracks('/tracks/trending', { time, ...(genre ? { genre } : {}), limit: '40' });
+const audiusUserTracks = (id) => auTracks(`/users/${encodeURIComponent(id)}/tracks`, { limit: '100', sort: 'plays' });
+async function audiusPlaylist(id) {
+  const meta = await auGet(`/playlists/${encodeURIComponent(id)}`);
+  const p = Array.isArray(meta) ? meta[0] : meta;
+  const tracks = await auTracks(`/playlists/${encodeURIComponent(id)}/tracks`, { limit: '200' });
+  if (!p && !tracks) return null;
+  return { id, name: p ? p.playlist_name : 'Плейлист', user: p && p.user ? p.user.name : '', cover: p ? auArt(p.artwork) : null, tracks: tracks || [] };
+}
+async function audiusUser(id) {
+  const u = await auGet(`/users/${encodeURIComponent(id)}`);
+  const tracks = await audiusUserTracks(id);
+  if (!u && !tracks) return null;
+  return { id, name: u ? u.name : '', handle: u ? u.handle : '', photo: u ? auArt(u.profile_picture) : null, cover: u ? auArt(u.cover_photo, '2000x') : null, followers: u ? u.follower_count : 0, tracks: tracks || [] };
+}
+// Скачивание (только треки, где исполнитель разрешил)
+async function audiusDownload(auId, dest) {
+  const host = await auHost();
+  const res = await net.fetch(`${host}/v1/tracks/${encodeURIComponent(auId)}/download?app_name=${AUDIUS_APP}`, { headers: { 'User-Agent': UA } });
+  if (!res.ok || !res.body) throw new Error('HTTP ' + res.status);
+  const fs = require('fs');
+  const tmp = dest + '.part';
+  const out = fs.createWriteStream(tmp);
+  const reader = res.body.getReader();
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (!out.write(Buffer.from(value))) await new Promise((r) => out.once('drain', r));
+  }
+  await new Promise((r, j) => out.end((e) => (e ? j(e) : r())));
+  fs.renameSync(tmp, dest);
+  return dest;
+}
+
 // ---------- Интернет-радио ----------
 const RADIO_HOSTS = ['de1.api.radio-browser.info', 'de2.api.radio-browser.info', 'fi1.api.radio-browser.info', 'nl1.api.radio-browser.info', 'at1.api.radio-browser.info'];
 let radioHost = null;
@@ -525,4 +610,4 @@ async function radioClick(id) {
   if (radioHost && id) getJson(`https://${radioHost}/json/url/${id}`, 5000);
 }
 
-module.exports = { artistImageSearch, findArtistImage, lyrics, lyricsSearch, geniusLyrics, parseGeniusLyrics, CoverQueue, findCover, coverSearch, fetchImage, radioSearch, radioClick, sim, artistSim };
+module.exports = { audiusSearch, audiusTrending, audiusUser, audiusPlaylist, audiusDownload, artistImageSearch, findArtistImage, lyrics, lyricsSearch, geniusLyrics, parseGeniusLyrics, CoverQueue, findCover, coverSearch, fetchImage, radioSearch, radioClick, sim, artistSim };
