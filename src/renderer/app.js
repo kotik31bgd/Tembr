@@ -85,6 +85,7 @@ const S = {
   online: new Map(), // треки из Internet Archive: id 'ia:<запись>/<файл>'
   archive: { cat: 'free', sort: 'downloads', query: '', page: 1, items: null, total: 0, loading: false },
   iaItems: new Map(),
+  sc: { configured: false, tab: 'search', query: '', results: null, next: null, loading: false, error: '', favs: [], title: '' },
   artistImages: {},
   settings: {},
   dataDir: '',
@@ -322,11 +323,26 @@ const Player = {
       if (!st) return;
       this.current = { kind: 'radio', id: e.id, station: st };
       audio.src = st.url;
-    } else if (e.id.startsWith('ia:')) {
+    } else if (e.id.startsWith('ia:') || e.id.startsWith('sc:')) {
       const o = S.online.get(e.id);
       if (!o) return;
       this.current = { kind: 'online', id: e.id, track: o };
-      audio.src = o.url;
+      if (o.source === 'sc') {
+        // У SoundCloud ссылка на поток временная — получаем свежую при каждом запуске
+        audio.removeAttribute('src');
+        const myId = e.id, wantPlay = autoplay;
+        autoplay = false;
+        window.api.scStream(o.scId).then((r) => {
+          if (this.current?.id !== myId) return;
+          if (!r.ok || !r.data) {
+            toast(r.error || `SoundCloud не отдал «${o.title}»`);
+            if (++errorSkips < 5) setTimeout(() => this.next(true), 800);
+            return;
+          }
+          audio.src = r.data;
+          if (wantPlay) this.play();
+        });
+      } else audio.src = o.url;
     } else {
       const t = S.tracks.get(e.id);
       if (!t) { // файл исчез из библиотеки — пропускаем
@@ -440,16 +456,16 @@ const Player = {
   },
 
   persist: debounce(function () {
-    const q = Player.queue.filter((e) => !e.id.startsWith('r:') && !e.id.startsWith('ia:'));
+    const q = Player.queue.filter((e) => !/^(r|ia|sc):/.test(e.id));
     const cur = Player.queue[Player.index];
-    if (!cur || cur.id.startsWith('r:') || cur.id.startsWith('ia:')) return;
+    if (!cur || /^(r|ia|sc):/.test(cur.id)) return;
     const start = Math.max(0, q.indexOf(cur) - 200);
     const slice = q.slice(start, start + 1000);
     setSetting({
       lastTrack: {
         ids: slice.map((e) => e.id),
         index: slice.indexOf(cur),
-        base: S.settings.shuffle ? Player.base.filter((e) => !e.id.startsWith('r:') && !e.id.startsWith('ia:')).slice(0, 1000).map((e) => e.id) : null,
+        base: S.settings.shuffle ? Player.base.filter((e) => !/^(r|ia|sc):/.test(e.id)).slice(0, 1000).map((e) => e.id) : null,
         time: Math.floor(audio.currentTime || 0),
       },
     });
@@ -567,7 +583,9 @@ function updateNowPlaying() {
   } else if (c && c.kind === 'online') {
     const t = c.track;
     title = t.title;
-    artistHtml = `${esc(t.artist)} · <span class="link" data-ia="${esc(t.iaId)}">${esc(t.album)}</span>`;
+    artistHtml = t.source === 'sc'
+      ? `${esc(t.artist)} · <span class="link" data-ext="${esc(t.permalink)}" title="Открыть на SoundCloud">SoundCloud</span>`
+      : `${esc(t.artist)} · <span class="link" data-ia="${esc(t.iaId)}">${esc(t.album)}</span>`;
     coverUrl = t.cover;
   } else if (c) {
     const st = c.station;
@@ -855,6 +873,8 @@ window.addEventListener('resize', () => currentList?.refresh());
 document.addEventListener('click', (e) => {
   const a = e.target.closest('[data-artist]');
   if (a && a.classList.contains('link')) return navigate({ name: 'artist', key: a.dataset.artist });
+  const ext = e.target.closest('[data-ext]');
+  if (ext && ext.classList.contains('link') && !ext.closest('.view-head')) return window.api.openExternal(ext.dataset.ext);
   const ia = e.target.closest('[data-ia]');
   if (ia && ia.classList.contains('link')) return navigate({ name: 'archiveItem', key: ia.dataset.ia });
   const al = e.target.closest('[data-album]');
@@ -1046,6 +1066,7 @@ function renderNav() {
     ${item({ name: 'playlists' }, 'playlist', 'Плейлисты', v === 'playlists')}
     ${item({ name: 'liked' }, 'heart', 'Избранное', v === 'liked', liked)}
     ${item({ name: 'radio' }, 'radio', 'Радио', v === 'radio')}
+    ${item({ name: 'soundcloud' }, 'cloud', 'SoundCloud', v === 'soundcloud')}
     ${item({ name: 'archive' }, 'globe', 'Архив', v === 'archive' || v === 'archiveItem')}
     ${item({ name: 'settings' }, 'settings', 'Настройки', v === 'settings')}
     <div class="nav-title">Ваши плейлисты <button id="nav-new-pl" title="Новый плейлист">${icon('add')}</button></div>
@@ -1131,7 +1152,7 @@ function render(keepScroll) {
   view.innerHTML = '';
   $('#btn-back').disabled = !S.history.length;
   const v = S.view;
-  if (S.search.trim() && !['settings', 'radio', 'archive'].includes(v.name)) renderSearch(view);
+  if (S.search.trim() && !['settings', 'radio', 'archive', 'soundcloud'].includes(v.name)) renderSearch(view);
   else {
     const fn = VIEWS[v.name] || VIEWS.home;
     fn(view, v);
@@ -1490,6 +1511,7 @@ const VIEWS = {
 
   radio(view) { renderRadio(view); },
   archive(view) { renderArchive(view); },
+  soundcloud(view) { renderSoundCloud(view); },
   archiveItem(view, v) { renderArchiveItem(view, v.key); },
   settings(view) { renderSettings(view); },
 };
@@ -1615,7 +1637,7 @@ const onSearch = debounce(() => { S.selected.clear(); render(false); }, 180);
 $('#search').addEventListener('input', (e) => {
   S.search = e.target.value;
   $('.search').classList.toggle('has-text', !!S.search);
-  if (S.view.name === 'settings' || S.view.name === 'radio' || S.view.name === 'archive') {
+  if (['settings', 'radio', 'archive', 'soundcloud'].includes(S.view.name)) {
     if (S.search.trim()) { S.history.push({ view: S.view, scroll: 0 }); S.view = { name: 'tracks' }; renderNav(); }
   }
   onSearch();
@@ -1702,6 +1724,156 @@ function renderRadio(view) {
   q.addEventListener('input', debounce(() => { R.query = q.value.trim(); R.results = null; load(); view.querySelector('.section-title:last-of-type').textContent = R.query ? 'Результаты поиска' : 'Популярные станции'; }, 450));
   $('#r-country').addEventListener('change', (e) => { R.country = e.target.value; R.results = null; load(); });
   if (R.results === null) load(); else draw();
+}
+
+// =====================================================================
+//  SoundCloud (официальный API)
+// =====================================================================
+const isScLink = (q) => /^(https?:\/\/)?(www\.|m\.|on\.)?soundcloud\.com\//i.test(q.trim());
+
+function scSetupHtml(err) {
+  return `<div class="glass-box sc-setup">
+    <h3 style="margin-top:0">Подключение SoundCloud</h3>
+    <p>Tembr работает с <b>официальным API SoundCloud</b>: поиск и прослушивание прямо в плеере. Для этого нужны ваши личные ключи разработчика — это бесплатно.</p>
+    <ol>
+      <li>Войдите на SoundCloud и откройте <span class="link" data-ext="https://soundcloud.com/you/apps">soundcloud.com/you/apps</span>.</li>
+      <li>Зарегистрируйте новое приложение (название — любое, например «Tembr»). SoundCloud может рассматривать заявку некоторое время.</li>
+      <li>Скопируйте <b>Client ID</b> и <b>Client Secret</b> и вставьте ниже.</li>
+    </ol>
+    <div class="sc-keys">
+      <input class="input" id="sc-id" placeholder="Client ID" spellcheck="false" autocomplete="off"/>
+      <input class="input" id="sc-secret" placeholder="Client Secret" type="password" spellcheck="false" autocomplete="off"/>
+      <button class="btn primary" id="sc-save">${icon('check')}Сохранить и проверить</button>
+    </div>
+    ${err ? `<div class="sc-err">${esc(err)}</div>` : ''}
+    <p class="hint-sm">Ключи хранятся только на этом компьютере (секрет — в зашифрованном виде). Скачивать треки SoundCloud не разрешает, поэтому в Tembr их можно только слушать.</p>
+  </div>`;
+}
+
+function scRowHtml(t, i) {
+  const fav = S.sc.favs.some((x) => x.id === t.id);
+  return `<div class="ia-row sc-row" data-i="${i}" data-id="${esc(t.id)}">
+    <div class="c-num"><span class="n">${i + 1}</span>${icon('play', 'pl')}<span class="bars"><span></span><span></span><span></span></span></div>
+    <div class="sc-main"><div class="cv" style="${bg(t.cover)}">${t.cover ? '' : icon('cloud')}</div><div class="meta"><div class="t ell" title="${esc(t.title)}">${esc(t.title)}${t.access === 'preview' ? ' <span class="badge-pv" title="Полная версия только по подписке SoundCloud Go+">30 сек</span>' : ''}</div><div class="a ell">${esc(t.artist)}${t.genre ? ' · ' + esc(t.genre) : ''}</div></div></div>
+    <div class="c-dur">${fmtTime(t.duration)}</div>
+    <div class="sc-acts"><button class="icon-btn small${fav ? ' active' : ''}" data-fav title="${fav ? 'Убрать из коллекции' : 'В коллекцию'}">${icon(fav ? 'heartFill' : 'heart')}</button><button class="icon-btn small" data-open title="Открыть на SoundCloud">${icon('web')}</button></div>
+  </div>`;
+}
+
+async function renderSoundCloud(view) {
+  const C = S.sc;
+  const st = await window.api.scStatus();
+  if (S.view.name !== 'soundcloud') return;
+  C.configured = st.configured;
+  if (!C.favs.length) C.favs = (await window.api.scFavs()) || [];
+  view.innerHTML = '';
+  view.insertAdjacentHTML('beforeend', head({ kicker: 'Онлайн · официальный API', title: 'SoundCloud', sub: 'Поиск и прослушивание треков SoundCloud прямо в Tembr', art: null, artClass: 'grad-4', artIcon: 'cloud', banner: 'grad-4' }));
+  if (!C.configured) {
+    view.insertAdjacentHTML('beforeend', scSetupHtml(C.error));
+    view.querySelector('#sc-save').addEventListener('click', async (e) => {
+      const id = view.querySelector('#sc-id').value, secret = view.querySelector('#sc-secret').value;
+      if (!id.trim() || !secret.trim()) return toast('Вставьте оба ключа');
+      e.currentTarget.disabled = true;
+      e.currentTarget.textContent = 'Проверяю…';
+      const r = await window.api.scSetKeys(id, secret);
+      C.error = r.ok ? '' : r.error;
+      if (r.ok) toast('SoundCloud подключён');
+      render(true);
+    });
+    return;
+  }
+  const wrap = document.createElement('div');
+  wrap.innerHTML = `
+    <div class="radio-filters">
+      <input class="input" id="sc-q" placeholder="Поиск треков или ссылка на трек, плейлист, профиль…" value="${esc(C.query)}" style="flex:1;max-width:560px" spellcheck="false"/>
+      <div class="seg"><button data-tab="search" class="${C.tab === 'search' ? 'on' : ''}">Поиск</button><button data-tab="favs" class="${C.tab === 'favs' ? 'on' : ''}">Моя коллекция · ${C.favs.length}</button></div>
+    </div>
+    <div id="sc-res"></div>`;
+  view.appendChild(wrap);
+  const res = wrap.querySelector('#sc-res');
+  const list = () => (C.tab === 'favs' ? C.favs : C.results || []);
+  const draw = () => {
+    if (C.tab === 'search' && C.loading && !C.results) { res.innerHTML = '<div class="scan-status" style="padding:20px 0"><div class="spinner"></div>Ищу на SoundCloud…</div>'; return; }
+    if (C.tab === 'search' && C.error) { res.innerHTML = `<div class="empty" style="padding:30px"><p>${esc(C.error)}</p></div>`; return; }
+    const items = list();
+    if (!items.length) {
+      res.innerHTML = `<div class="empty" style="padding:40px 20px"><p>${C.tab === 'favs' ? 'В коллекции пока пусто — нажимайте ♡ у треков.' : C.results ? 'Ничего не найдено.' : 'Введите название трека или вставьте ссылку с soundcloud.com'}</p></div>`;
+      return;
+    }
+    const titleTxt = C.tab === 'favs' ? 'Моя коллекция' : C.title || 'Результаты';
+    res.innerHTML = `<div class="section-title"><span>${esc(titleTxt)}</span><button id="sc-playall">${icon('play')} Слушать все</button></div>
+      <div class="tlist ia-list">${items.map(scRowHtml).join('')}</div>
+      ${C.tab === 'search' && C.next ? `<div style="text-align:center;margin:20px 0"><button class="btn" id="sc-more">${C.loading ? 'Загружаю…' : 'Показать ещё'}</button></div>` : ''}
+      <div class="sc-attr">Музыка предоставлена ${'<span class="link" data-ext="https://soundcloud.com">SoundCloud</span>'}</div>`;
+    markIaPlaying();
+  };
+  const play = (i) => {
+    const items = list();
+    for (const t of items) S.online.set(t.id, t);
+    Player.playList(items.map((t) => t.id), i);
+  };
+  const run = async (more) => {
+    const q = C.query.trim();
+    if (!q) { C.results = null; return draw(); }
+    C.loading = true; C.error = '';
+    if (!more) { C.results = null; C.next = null; C.title = ''; }
+    draw();
+    const key = q + (more ? C.next : '');
+    C.key = key;
+    let r;
+    if (isScLink(q)) {
+      r = await window.api.scResolve(/^https?:/.test(q) ? q : 'https://' + q);
+      if (C.key !== key) return;
+      if (r.ok && r.data) { C.results = r.data.tracks; C.next = null; C.title = (r.data.kind === 'user' ? 'Исполнитель: ' : r.data.kind === 'playlist' ? 'Плейлист: ' : '') + r.data.title; }
+      else if (r.ok) C.error = 'По этой ссылке ничего не найдено.';
+    } else {
+      r = await window.api.scSearch(q, more ? C.next : null);
+      if (C.key !== key) return;
+      if (r.ok) { C.results = more ? [...(C.results || []), ...r.data.tracks] : r.data.tracks; C.next = r.data.next; C.title = 'Результаты'; }
+    }
+    if (!r.ok) C.error = r.error;
+    C.loading = false;
+    if (S.view.name === 'soundcloud') draw();
+  };
+  const q = wrap.querySelector('#sc-q');
+  q.addEventListener('keydown', (e) => { if (e.key === 'Enter') { C.query = q.value; C.tab = 'search'; wrap.querySelectorAll('[data-tab]').forEach((b) => b.classList.toggle('on', b.dataset.tab === 'search')); run(); } });
+  q.addEventListener('input', debounce(() => { if (q.value !== C.query && !isScLink(q.value)) { C.query = q.value; C.tab = 'search'; run(); } }, 600));
+  q.addEventListener('paste', () => setTimeout(() => { if (isScLink(q.value)) { C.query = q.value; C.tab = 'search'; run(); } }, 0));
+  wrap.addEventListener('click', async (e) => {
+    const tb = e.target.closest('[data-tab]');
+    if (tb) { C.tab = tb.dataset.tab; wrap.querySelectorAll('[data-tab]').forEach((b) => b.classList.toggle('on', b === tb)); return draw(); }
+    if (e.target.closest('#sc-more')) return !C.loading && run(true);
+    if (e.target.closest('#sc-playall')) return play(0);
+    const row = e.target.closest('.sc-row');
+    if (!row) return;
+    const t = list()[+row.dataset.i];
+    if (e.target.closest('[data-open]')) return window.api.openExternal(t.permalink);
+    if (e.target.closest('[data-fav]')) {
+      const i = C.favs.findIndex((x) => x.id === t.id);
+      if (i >= 0) C.favs.splice(i, 1); else C.favs.unshift(t);
+      await window.api.scFavs(C.favs);
+      wrap.querySelector('[data-tab="favs"]').textContent = `Моя коллекция · ${C.favs.length}`;
+      return draw();
+    }
+    if (Player.current?.id === t.id) return Player.toggle();
+    play(+row.dataset.i);
+  });
+  wrap.addEventListener('contextmenu', (e) => {
+    const row = e.target.closest('.sc-row');
+    if (!row) return;
+    e.preventDefault();
+    const t = list()[+row.dataset.i];
+    S.online.set(t.id, t);
+    openMenu(e.clientX, e.clientY, [
+      { label: 'Воспроизвести', icon: 'play', action: () => play(+row.dataset.i) },
+      { label: 'Играть следующим', icon: 'next', action: () => Player.playNext([t.id]) },
+      { label: 'Добавить в очередь', icon: 'queue', action: () => Player.addToQueue([t.id]) },
+      '-',
+      { label: 'Открыть на SoundCloud', icon: 'web', action: () => window.api.openExternal(t.permalink) },
+    ]);
+  });
+  draw();
+  if (C.query && !C.results && C.tab === 'search') run();
 }
 
 // =====================================================================
@@ -1888,6 +2060,10 @@ function renderSettings(view) {
       <div class="set-row"><div class="l"><b>Повторить поиск</b><small>Сбросить кэш ненайденных обложек и текстов и поискать заново</small></div><button class="btn" id="s-cache">Сбросить</button></div>
     </div>
     <div class="set-group">
+      <h3>SoundCloud</h3>
+      <div class="set-row"><div class="l"><b>Ключи официального API</b><small id="sc-st">Проверяю…</small></div><button class="btn" id="s-sc">Настроить</button><button class="btn" id="s-sc-off">Отключить</button></div>
+    </div>
+    <div class="set-group">
       <h3>Оформление</h3>
       <div class="set-row"><div class="l"><b>Тема</b></div><div class="seg"><button data-theme="dark" class="${st.theme !== 'light' ? 'on' : ''}">Тёмная</button><button data-theme="light" class="${st.theme === 'light' ? 'on' : ''}">Светлая</button></div></div>
       <div class="set-row"><div class="l"><b>Акцентный цвет</b></div><div class="swatches">${ACCENTS.map((c) => `<button class="swatch${c === st.accent ? ' on' : ''}" data-accent="${c}" style="background:${c}" title="${c === '#ffffff' ? 'Белый (в светлой теме — чёрный)' : ''}"></button>`).join('')}</div></div>
@@ -1918,6 +2094,12 @@ function renderSettings(view) {
       <div class="set-row"><div class="l"><b>Обновления</b><small class="upd-status" id="upd-status">${esc(updateText())}</small></div>${S.update.state === 'ready' ? `<button class="btn primary" id="s-upd-install">Перезапустить и обновить</button>` : `<button class="btn" id="s-upd">${icon('refresh')}Проверить</button>`}</div>
     </div>`;
   view.appendChild(el);
+  window.api.scStatus().then((st) => {
+    const sm = el.querySelector('#sc-st');
+    if (sm) sm.textContent = st.configured ? `Подключено (Client ID …${st.clientId.slice(-4)})` : 'Не подключено — поиск и прослушивание SoundCloud недоступны';
+    const off = el.querySelector('#s-sc-off');
+    if (off && !st.configured) off.remove();
+  });
   el.addEventListener('click', async (e) => {
     const t = e.target.closest('button');
     if (!t) return;
@@ -1937,6 +2119,8 @@ function renderSettings(view) {
     if (t.id === 's-rescan') { toast('Сканирую папки…'); await window.api.rescan(); toast('Готово'); return; }
     if (t.id === 's-cache') { await window.api.clearCache(); Lyrics.cache.clear(); toast('Кэш сброшен — ищу заново'); return; }
     if (t.id === 's-data') return window.api.openPath(S.dataDir);
+    if (t.id === 's-sc') { await window.api.scClearKeys(); return navigate({ name: 'soundcloud' }); }
+    if (t.id === 's-sc-off') { await window.api.scClearKeys(); toast('SoundCloud отключён'); return render(true); }
     if (t.id === 's-upd') { S.update = await window.api.updateCheck(); return render(true); }
     if (t.id === 's-upd-install') return window.api.updateInstall();
   });
@@ -2366,10 +2550,10 @@ $('#panel-body').addEventListener('click', (e) => {
 });
 
 function qItemHtml(e, qi, current) {
-  if (e.id.startsWith('ia:')) {
+  if (e.id.startsWith('ia:') || e.id.startsWith('sc:')) {
     const t = S.online.get(e.id);
     if (!t) return '';
-    return `<div class="q-item${current ? ' current' : ''}" data-qi="${qi}" draggable="${!current}"><div class="cv" style="background-image:url('${esc(t.cover)}')"></div><div class="meta"><div class="t ell">${esc(t.title)}</div><div class="a ell">${esc(t.artist)} · Архив</div></div>${current ? '' : `<button class="icon-btn small rm" data-rm title="Убрать из очереди">${icon('close')}</button>`}</div>`;
+    return `<div class="q-item${current ? ' current' : ''}" data-qi="${qi}" draggable="${!current}"><div class="cv" style="background-image:url('${esc(t.cover)}')"></div><div class="meta"><div class="t ell">${esc(t.title)}</div><div class="a ell">${esc(t.artist)} · ${t.source === 'sc' ? 'SoundCloud' : 'Архив'}</div></div>${current ? '' : `<button class="icon-btn small rm" data-rm title="Убрать из очереди">${icon('close')}</button>`}</div>`;
   }
   if (e.id.startsWith('r:')) {
     const st = S.stations.get(e.id);
@@ -2459,7 +2643,7 @@ $('#now-cover').addEventListener('click', () => {
   if (c?.kind === 'track' && !c.track.cover) return coverPicker([c.id], `${primaryArtist(c.track)} ${c.track.title}`, c.track.title);
   if (c?.kind === 'track' && albumKey(c.track)) navigate({ name: 'album', key: albumKey(c.track) });
   else if (c?.kind === 'radio') navigate({ name: 'radio' });
-  else if (c?.kind === 'online') navigate({ name: 'archiveItem', key: c.track.iaId });
+  else if (c?.kind === 'online') navigate(c.track.source === 'sc' ? { name: 'soundcloud' } : { name: 'archiveItem', key: c.track.iaId });
 });
 bindSlider($('#seek'), (f) => { seeking = true; const d = audio.duration; if (isFinite(d)) $('#time-cur').textContent = fmtTime(f * d); }, (f) => { seeking = false; const d = audio.duration; if (isFinite(d)) Player.seek(f * d); });
 bindSlider($('#volume'), (f) => Player.setVolume(f), (f) => Player.setVolume(f));

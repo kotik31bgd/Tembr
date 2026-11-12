@@ -586,6 +586,93 @@ async function iaDownload(url, dest, onProgress) {
   return dest;
 }
 
+// ---------- SoundCloud (официальный API, ключи пользователя) ----------
+// Документация: https://developers.soundcloud.com/docs/api/guide — поиск и воспроизведение внутри приложения разрешены,
+// скачивание — нет. Адреса можно подменить переменными окружения для тестов.
+const SC_API = process.env.TEMBR_SC_API || 'https://api.soundcloud.com';
+const SC_AUTH = process.env.TEMBR_SC_AUTH || 'https://secure.soundcloud.com/oauth/token';
+const scState = { token: null, exp: 0, key: '' };
+
+async function scToken(creds, force = false) {
+  if (!creds || !creds.clientId || !creds.clientSecret) throw Object.assign(new Error('Не указаны ключи SoundCloud'), { code: 'nokeys' });
+  const key = creds.clientId + ':' + creds.clientSecret;
+  if (!force && scState.token && scState.key === key && Date.now() < scState.exp - 60000) return scState.token;
+  const res = await net.fetch(SC_AUTH, {
+    method: 'POST',
+    headers: { Authorization: 'Basic ' + Buffer.from(key).toString('base64'), 'Content-Type': 'application/x-www-form-urlencoded', Accept: 'application/json; charset=utf-8', 'User-Agent': UA },
+    body: 'grant_type=client_credentials',
+  });
+  if (!res.ok) throw Object.assign(new Error(res.status === 401 || res.status === 400 ? 'SoundCloud не принял ключи — проверьте Client ID и Client Secret' : 'SoundCloud недоступен (' + res.status + ')'), { code: res.status === 401 || res.status === 400 ? 'badkeys' : 'net' });
+  const j = await res.json();
+  scState.token = j.access_token;
+  scState.exp = Date.now() + (j.expires_in || 3600) * 1000;
+  scState.key = key;
+  return scState.token;
+}
+async function scGet(creds, pathOrUrl, retry = true) {
+  const url = /^https?:/.test(pathOrUrl) ? pathOrUrl : SC_API + pathOrUrl;
+  const token = await scToken(creds);
+  const res = await net.fetch(url, { headers: { Authorization: 'OAuth ' + token, Accept: 'application/json; charset=utf-8', 'User-Agent': UA } });
+  if (res.status === 401 && retry) { scState.token = null; return scGet(creds, pathOrUrl, false); }
+  if (res.status === 404) return null;
+  if (!res.ok) throw Object.assign(new Error('Ошибка SoundCloud: ' + res.status), { code: 'net' });
+  return res.json();
+}
+function scTrack(x) {
+  if (!x || x.kind !== 'track') return null;
+  const art = x.artwork_url || (x.user && x.user.avatar_url) || '';
+  return {
+    id: 'sc:' + x.id, scId: x.id, source: 'sc',
+    title: x.title || 'Без названия', artist: (x.user && x.user.username) || (x.publisher_metadata && x.publisher_metadata.artist) || '',
+    album: 'SoundCloud', duration: (x.duration || 0) / 1000, cover: art ? art.replace('-large.', '-t500x500.') : null,
+    permalink: x.permalink_url || '', access: x.access || (x.streamable === false ? 'blocked' : 'playable'),
+    genre: x.genre || '', plays: x.playback_count || 0,
+  };
+}
+async function scSearch(creds, q, next) {
+  const j = await scGet(creds, next || `/tracks?linked_partitioning=true&limit=40&q=${encodeURIComponent(q)}`);
+  const list = j ? (Array.isArray(j) ? j : j.collection || []) : [];
+  return { tracks: list.map(scTrack).filter((t) => t && t.access !== 'blocked'), next: (j && j.next_href) || null };
+}
+// Ссылка с сайта: трек, плейлист/альбом или профиль
+async function scResolve(creds, link) {
+  const j = await scGet(creds, '/resolve?url=' + encodeURIComponent(link));
+  if (!j) return null;
+  if (j.kind === 'track') return { kind: 'track', title: j.title, tracks: [scTrack(j)].filter(Boolean) };
+  if (j.kind === 'playlist') {
+    let tracks = (j.tracks || []).map(scTrack).filter(Boolean);
+    if (!tracks.length && j.id) { const t = await scGet(creds, `/playlists/${j.id}/tracks?limit=200`); tracks = (Array.isArray(t) ? t : (t && t.collection) || []).map(scTrack).filter(Boolean); }
+    return { kind: 'playlist', title: j.title, cover: j.artwork_url ? j.artwork_url.replace('-large.', '-t500x500.') : null, tracks: tracks.filter((t) => t.access !== 'blocked') };
+  }
+  if (j.kind === 'user') {
+    const t = await scGet(creds, `/users/${j.id}/tracks?linked_partitioning=true&limit=100`);
+    const list = t ? (Array.isArray(t) ? t : t.collection || []) : [];
+    return { kind: 'user', title: j.username, cover: j.avatar_url ? j.avatar_url.replace('-large.', '-t500x500.') : null, tracks: list.map(scTrack).filter((x) => x && x.access !== 'blocked') };
+  }
+  return null;
+}
+// Адрес потока: API отвечает перенаправлением на временную ссылку, её и отдаём плееру
+async function scStream(creds, scId) {
+  const j = await scGet(creds, `/tracks/${encodeURIComponent(scId)}/streams`);
+  const api = j && (j.http_mp3_128_url || j.preview_mp3_128_url);
+  if (!api) return null;
+  const token = await scToken(creds);
+  const { net: enet } = require('electron');
+  return new Promise((resolve) => {
+    const req = enet.request({ url: api, redirect: 'manual' });
+    req.setHeader('Authorization', 'OAuth ' + token);
+    req.setHeader('User-Agent', UA);
+    req.on('redirect', (_st, _m, location) => { resolve(location); req.abort(); });
+    req.on('response', (res) => {
+      let body = '';
+      res.on('data', (c) => { body += c; });
+      res.on('end', () => { try { const u = JSON.parse(body).url; resolve(u || null); } catch { resolve(null); } });
+    });
+    req.on('error', () => resolve(null));
+    req.end();
+  });
+}
+
 // ---------- Интернет-радио ----------
 const RADIO_HOSTS = ['de1.api.radio-browser.info', 'de2.api.radio-browser.info', 'fi1.api.radio-browser.info', 'nl1.api.radio-browser.info', 'at1.api.radio-browser.info'];
 let radioHost = null;
@@ -621,4 +708,4 @@ async function radioClick(id) {
   if (radioHost && id) getJson(`https://${radioHost}/json/url/${id}`, 5000);
 }
 
-module.exports = { iaSearch, iaItem, iaDownload, artistImageSearch, findArtistImage, lyrics, lyricsSearch, geniusLyrics, parseGeniusLyrics, CoverQueue, findCover, coverSearch, fetchImage, radioSearch, radioClick, sim, artistSim };
+module.exports = { scToken, scSearch, scResolve, scStream, iaSearch, iaItem, iaDownload, artistImageSearch, findArtistImage, lyrics, lyricsSearch, geniusLyrics, parseGeniusLyrics, CoverQueue, findCover, coverSearch, fetchImage, radioSearch, radioClick, sim, artistSim };

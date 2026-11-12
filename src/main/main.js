@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, dialog, protocol, Menu, Tray, nativeImage, shell, session, screen } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, protocol, Menu, Tray, nativeImage, shell, session, screen, safeStorage } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const { Readable } = require('stream');
@@ -359,6 +359,33 @@ function setupIpc() {
   });
 
   ipcMain.handle('radio:search', (_e, q) => online.radioSearch(q));
+
+  // ---------- SoundCloud ----------
+  // Секрет храним зашифрованным средствами Windows (safeStorage), если это доступно
+  const scCreds = () => {
+    const c = lib.data.scKeys;
+    if (!c || !c.clientId) return null;
+    let secret = '';
+    try { secret = c.enc && safeStorage.isEncryptionAvailable() ? safeStorage.decryptString(Buffer.from(c.secret, 'base64')) : c.secret; } catch { secret = ''; }
+    return { clientId: c.clientId, clientSecret: secret };
+  };
+  const scWrap = (fn) => async (...a) => {
+    try { return { ok: true, data: await fn(...a) }; } catch (e) { return { ok: false, error: e.message, code: e.code || 'net' }; }
+  };
+  ipcMain.handle('sc:status', () => ({ configured: !!scCreds(), clientId: lib.data.scKeys ? lib.data.scKeys.clientId : '' }));
+  ipcMain.handle('sc:setKeys', scWrap(async (_e, clientId, clientSecret) => {
+    clientId = String(clientId || '').trim(); clientSecret = String(clientSecret || '').trim();
+    await online.scToken({ clientId, clientSecret }, true); // проверяем, что ключи рабочие
+    const enc = safeStorage.isEncryptionAvailable();
+    lib.data.scKeys = { clientId, secret: enc ? safeStorage.encryptString(clientSecret).toString('base64') : clientSecret, enc };
+    lib.save();
+    return true;
+  }));
+  ipcMain.handle('sc:clearKeys', () => { delete lib.data.scKeys; lib.save(); return true; });
+  ipcMain.handle('sc:search', scWrap((_e, q, next) => online.scSearch(scCreds(), String(q || ''), next)));
+  ipcMain.handle('sc:resolve', scWrap((_e, link) => online.scResolve(scCreds(), String(link || ''))));
+  ipcMain.handle('sc:stream', scWrap((_e, id) => online.scStream(scCreds(), id)));
+  ipcMain.handle('sc:favs', (_e, list) => { if (Array.isArray(list)) { lib.data.scFavs = list.slice(0, 2000); lib.save(); } return lib.data.scFavs || []; });
 
   // ---------- Internet Archive ----------
   ipcMain.handle('ia:search', (_e, q) => online.iaSearch(q || {}));
