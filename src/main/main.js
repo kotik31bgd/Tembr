@@ -4,6 +4,7 @@ const fs = require('fs');
 const { Readable } = require('stream');
 const { Library, isAudio } = require('./library');
 const online = require('./online');
+const { autoUpdater } = require('electron-updater');
 
 const ASSETS = path.join(__dirname, '..', '..', 'assets');
 const RENDERER = path.join(__dirname, '..', 'renderer');
@@ -335,6 +336,40 @@ function setupIpc() {
   ipcMain.on('app:quit', () => { quitting = true; app.quit(); });
 }
 
+// ---------- Автообновление (через GitHub Releases) ----------
+let updateState = { state: app.isPackaged ? 'idle' : 'dev' };
+function setUpdate(st) {
+  updateState = st;
+  broadcast('update', st);
+}
+function setupUpdater() {
+  ipcMain.handle('update:get', () => updateState);
+  ipcMain.handle('update:check', () => {
+    if (!app.isPackaged) return updateState;
+    setUpdate({ state: 'checking' });
+    autoUpdater.checkForUpdates().catch((e) => setUpdate({ state: 'error', message: String(e.message || e) }));
+    return updateState;
+  });
+  ipcMain.on('update:install', () => {
+    if (updateState.state !== 'ready') return;
+    quitting = true;
+    lib?.close();
+    autoUpdater.quitAndInstall(true, true);
+  });
+  if (!app.isPackaged) return;
+  autoUpdater.autoDownload = true;
+  autoUpdater.autoInstallOnAppQuit = true;
+  autoUpdater.on('checking-for-update', () => setUpdate({ state: 'checking' }));
+  autoUpdater.on('update-available', (i) => setUpdate({ state: 'downloading', version: i.version, percent: 0 }));
+  autoUpdater.on('download-progress', (p) => setUpdate({ state: 'downloading', version: updateState.version, percent: Math.round(p.percent) }));
+  autoUpdater.on('update-downloaded', (i) => setUpdate({ state: 'ready', version: i.version }));
+  autoUpdater.on('update-not-available', () => setUpdate({ state: 'latest' }));
+  autoUpdater.on('error', (e) => setUpdate({ state: 'error', message: String((e && e.message) || e).slice(0, 200) }));
+  const check = () => autoUpdater.checkForUpdates().catch(() => {});
+  setTimeout(check, 4000);
+  setInterval(check, 3 * 3600 * 1000);
+}
+
 // ---------- Запуск ----------
 const pendingOpen = [];
 
@@ -353,6 +388,7 @@ app.whenReady().then(async () => {
   registerMediaProtocol();
   allowCorsForMedia();
   setupIpc();
+  setupUpdater();
 
   const files = filesFromArgv(process.argv);
   if (files.length) pendingOpen.push(...(await lib.addPaths(files)));

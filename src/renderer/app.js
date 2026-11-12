@@ -74,6 +74,7 @@ const S = {
   selected: new Set(),
   lastSel: -1,
   progress: { scanning: false },
+  update: { state: 'idle' },
   radio: { tag: '', country: '', query: '', results: null, loading: false },
   stations: new Map(),
   panel: null, // 'lyrics' | 'queue' | null
@@ -1420,6 +1421,7 @@ function renderSettings(view) {
     <div class="set-group">
       <h3>О программе</h3>
       <div class="set-row"><div class="l"><b>Tembr ${esc(S.version)}</b><small>Данные: ${esc(S.dataDir)}</small></div><button class="btn" id="s-data">Открыть папку данных</button></div>
+      <div class="set-row"><div class="l"><b>Обновления</b><small class="upd-status" id="upd-status">${esc(updateText())}</small></div>${S.update.state === 'ready' ? `<button class="btn primary" id="s-upd-install">Перезапустить и обновить</button>` : `<button class="btn" id="s-upd">${icon('refresh')}Проверить</button>`}</div>
     </div>`;
   view.appendChild(el);
   el.addEventListener('click', async (e) => {
@@ -1441,6 +1443,8 @@ function renderSettings(view) {
     if (t.id === 's-rescan') { toast('Сканирую папки…'); await window.api.rescan(); toast('Готово'); return; }
     if (t.id === 's-cache') { await window.api.clearCache(); Lyrics.cache.clear(); toast('Кэш сброшен — ищу заново'); return; }
     if (t.id === 's-data') return window.api.openPath(S.dataDir);
+    if (t.id === 's-upd') { S.update = await window.api.updateCheck(); return render(true); }
+    if (t.id === 's-upd-install') return window.api.updateInstall();
   });
 }
 
@@ -1799,6 +1803,34 @@ window.api.onOpenFiles(async (ids) => {
 });
 
 // =====================================================================
+//  Обновления
+// =====================================================================
+function updateText() {
+  const u = S.update;
+  switch (u.state) {
+    case 'dev': return 'Автообновление работает только в установленной версии';
+    case 'checking': return 'Проверяю…';
+    case 'downloading': return `Скачиваю версию ${u.version || ''}… ${u.percent || 0}%`;
+    case 'ready': return `Версия ${u.version} скачана и готова к установке`;
+    case 'latest': return 'У вас последняя версия';
+    case 'error': return 'Не удалось проверить обновления: ' + (u.message || '');
+    default: return 'Проверяются автоматически при запуске';
+  }
+}
+function applyUpdate(u) {
+  const prev = S.update.state;
+  S.update = u;
+  const b = $('#update-btn');
+  b.classList.toggle('hidden', u.state !== 'ready');
+  if (u.state === 'ready') b.innerHTML = `${icon('refresh')}Обновить до ${esc(u.version)}`;
+  if (u.state === 'ready' && prev !== 'ready') toast(`Скачана новая версия ${u.version}. Нажмите «Обновить» вверху — или она установится при выходе.`, 6000);
+  const st = $('#upd-status');
+  if (st) { if ((prev === 'ready') !== (u.state === 'ready')) render(true); else st.textContent = updateText(); }
+}
+$('#update-btn').addEventListener('click', () => window.api.updateInstall());
+window.api.onUpdate(applyUpdate);
+
+// =====================================================================
 //  Запуск
 // =====================================================================
 (async function boot() {
@@ -1821,6 +1853,7 @@ window.api.onOpenFiles(async (ids) => {
   render(false);
   updateNowPlaying();
   updateControls();
+  applyUpdate(await window.api.updateGet());
   if (d.openFiles && d.openFiles.length) Player.playList(d.openFiles, 0);
   else Player.restore();
 })();

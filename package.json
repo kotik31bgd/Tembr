@@ -1,17 +1,19 @@
 {
   "name": "tembr",
   "productName": "Tembr",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Музыкальный плеер для Windows",
   "main": "src/main/main.js",
   "author": "Tembr",
   "license": "MIT",
   "scripts": {
     "start": "electron .",
-    "dist": "electron-builder --win --x64 --publish never"
+    "dist": "electron-builder --win --x64 --publish never",
+    "release": "electron-builder --win --x64 --publish always"
   },
   "dependencies": {
     "chokidar": "3.6.0",
+    "electron-updater": "6.3.9",
     "music-metadata": "11.2.3"
   },
   "devDependencies": {
@@ -37,12 +39,6 @@
           "arch": [
             "x64"
           ]
-        },
-        {
-          "target": "portable",
-          "arch": [
-            "x64"
-          ]
         }
       ],
       "icon": "build/icon.ico"
@@ -55,9 +51,6 @@
       "uninstallerIcon": "build/icon.ico",
       "shortcutName": "Tembr",
       "artifactName": "Tembr-Setup-${version}.exe"
-    },
-    "portable": {
-      "artifactName": "Tembr-Portable-${version}.exe"
     },
     "fileAssociations": [
       {
@@ -75,6 +68,17 @@
         "description": "Аудиофайл"
       }
     ],
-    "publish": null
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "kotik31bgd",
+        "repo": "Tembr",
+        "releaseType": "release"
+      }
+    ]
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/kotik31bgd/Tembr.git"
   }
 }
