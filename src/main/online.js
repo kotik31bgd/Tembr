@@ -1,4 +1,4 @@
-// Онлайн-сервисы: тексты песен (LRCLIB), обложки (MusicBrainz + Cover Art Archive), интернет-радио (Radio Browser).
+// Онлайн-сервисы: тексты песен (LRCLIB, Genius), обложки (Deezer, Яндекс Музыка, Apple Music, Genius, MusicBrainz), интернет-радио (Radio Browser).
 const { net } = require('electron');
 
 const UA = 'TembrPlayer/1.0 (desktop music player)';
@@ -20,6 +20,112 @@ async function getJson(url, timeoutMs = 12000) {
   }
 }
 
+const BROWSER_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36';
+async function getText(url, timeoutMs = 15000) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  try {
+    const res = await net.fetch(url, { headers: { 'User-Agent': BROWSER_UA, Accept: 'text/html' }, signal: ctrl.signal });
+    if (!res.ok) { if (res.status >= 500 || res.status === 429) netErrors++; return null; }
+    return await res.text();
+  } catch {
+    netErrors++;
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// ---------- Genius ----------
+async function geniusSearch(q) {
+  const r = await getJson('https://genius.com/api/search/multi?per_page=5&q=' + encodeURIComponent(q));
+  const out = [];
+  const seen = new Set();
+  for (const sec of (r && r.response && r.response.sections) || []) {
+    for (const h of sec.hits || []) {
+      const x = h.result;
+      if (h.type !== 'song' || !x || seen.has(x.id)) continue;
+      seen.add(x.id);
+      out.push({
+        id: x.id, title: x.title, artist: x.artist_names || (x.primary_artist && x.primary_artist.name) || '',
+        url: x.url, image: x.song_art_image_url || x.header_image_url, thumb: x.song_art_image_thumbnail_url || x.song_art_image_url,
+        instrumental: !!x.instrumental, source: 'Genius',
+      });
+    }
+  }
+  return out;
+}
+
+function decodeEntities(s) {
+  return s.replace(/&(#x[0-9a-f]+|#\d+|amp|lt|gt|quot|apos|nbsp);/gi, (m, e) => {
+    e = e.toLowerCase();
+    if (e[0] === '#') return String.fromCodePoint(e[1] === 'x' ? parseInt(e.slice(2), 16) : parseInt(e.slice(1), 10));
+    return { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: ' ' }[e];
+  });
+}
+// Находит <div ...marker...>…</div> с учётом вложенных div: [начало тега, начало содержимого, конец содержимого, конец блока]
+function divRanges(html, marker) {
+  const out = [];
+  let i = 0;
+  while ((i = html.indexOf(marker, i)) !== -1) {
+    const open = html.lastIndexOf('<div', i);
+    const start = html.indexOf('>', i) + 1;
+    const re = /<\/?div\b[^>]*>/gi;
+    re.lastIndex = start;
+    let depth = 1, m, done = false;
+    while ((m = re.exec(html))) {
+      depth += m[0][1] === '/' ? -1 : 1;
+      if (!depth) { out.push([open, start, m.index, re.lastIndex]); i = re.lastIndex; done = true; break; }
+    }
+    if (!done) break;
+  }
+  return out;
+}
+function parseGeniusLyrics(html) {
+  if (!html) return null;
+  const parts = [];
+  for (const [, a, b] of divRanges(html, 'data-lyrics-container="true"')) {
+    let inner = html.slice(a, b);
+    // служебные вставки внутри текста (заголовки, «N Contributors» и т.п.)
+    for (const [o, , , e] of divRanges(inner, 'data-exclude-from-selection="true"').reverse()) inner = inner.slice(0, o) + inner.slice(e);
+    parts.push(inner.replace(/<br\s*\/?>/gi, '\n').replace(/<[^>]+>/g, ''));
+  }
+  if (!parts.length) return null;
+  const text = decodeEntities(parts.join('\n'))
+    .split('\n').map((l) => l.trim()).join('\n')
+    .replace(/\n{3,}/g, '\n\n').trim();
+  return text || null;
+}
+async function geniusLyrics(url) {
+  if (!/^https:\/\/genius\.com\//.test(url || '')) return null;
+  return parseGeniusLyrics(await getText(url));
+}
+async function geniusFind(t, artistFull) {
+  const cands = await geniusSearch(`${artistFull} ${t}`);
+  let best = null, bestScore = 0;
+  for (const c of cands) {
+    const ts = sim(t, c.title);
+    const as = artistSim(artistFull, c.artist);
+    if (ts < 0.85 || as < 0.75) continue;
+    if (ts + as > bestScore) { best = c; bestScore = ts + as; }
+  }
+  return best;
+}
+
+// ---------- Яндекс Музыка (обложки; хорошо знает русскую музыку) ----------
+async function yandexTracks(q, limit = 10) {
+  const r = await getJson('https://api.music.yandex.net/search?type=track&page=0&text=' + encodeURIComponent(q));
+  const items = (r && r.result && r.result.tracks && r.result.tracks.results) || [];
+  return items.slice(0, limit).map((x) => {
+    const uri = x.coverUri || (x.albums && x.albums[0] && x.albums[0].coverUri) || x.ogImage;
+    const alb = (x.albums && x.albums[0]) || {};
+    return {
+      title: x.title, artist: (x.artists || []).map((a) => a.name).join(', '), album: alb.title, duration: (x.durationMs || 0) / 1000,
+      image: uri ? 'https://' + uri.replace('%%', '600x600') : null, thumb: uri ? 'https://' + uri.replace('%%', '200x200') : null, source: 'Яндекс Музыка',
+    };
+  }).filter((x) => x.image);
+}
+
 // ---------- Тексты песен ----------
 function cleanTitle(s) {
   return (s || '')
@@ -34,11 +140,18 @@ async function lyrics(track) {
   if (!r && netErrors > before) return { retry: true };
   return r;
 }
+// Название из LRCLIB бывает вида «Исполнитель — Песня»: отрезаем исполнителя
+function stripArtistPrefix(name, artist) {
+  const m = String(name || '').split(/\s+[—–-]\s+/);
+  if (m.length >= 2 && artistSim(artist, m[0]) >= 0.75) return m.slice(1).join(' - ');
+  return name;
+}
 async function lyricsInner({ title, artist, album, duration }) {
   if (!title) return null;
   const t = cleanTitle(title);
   const a = (artist || '').split(/\s*(?:,|&|;| feat\.? | ft\.? )\s*/i)[0].trim();
   const good = (r) => r && (r.syncedLyrics || r.plainLyrics || r.instrumental);
+  let fallback = null; // текст без таймингов — используем, только если синхронного так и не найдём
   if (a) {
     const variants = [];
     const base = { track_name: t, artist_name: a };
@@ -47,24 +160,25 @@ async function lyricsInner({ title, artist, album, duration }) {
     variants.push(base);
     for (const v of variants) {
       const r = await getJson('https://lrclib.net/api/get?' + new URLSearchParams(v));
-      if (good(r)) return pack(r);
+      if (r && (r.syncedLyrics || r.instrumental)) return pack(r);
+      if (good(r) && !fallback) fallback = r;
     }
   }
   // Поиск с проверкой: исполнитель и название должны совпадать, длительность — быть близкой
   const seen = new Set();
   const cands = [];
-  for (const q of [{ track_name: t, artist_name: a }, { q: `${a} ${t}`.trim() }, { track_name: t }]) {
+  for (const q of [{ track_name: t, artist_name: a }, { q: `${a} ${t}`.trim() }, { q: `${artist || ''} ${t}`.trim() }, { track_name: t }]) {
     if (!a && q.artist_name !== undefined) continue;
     const list = await getJson('https://lrclib.net/api/search?' + new URLSearchParams(q));
     for (const x of Array.isArray(list) ? list : []) if (!seen.has(x.id) && good(x)) { seen.add(x.id); cands.push(x); }
-    if (cands.length >= 20) break;
+    if (cands.filter((x) => x.syncedLyrics).length >= 5) break;
   }
   let best = null, bestScore = 0;
   for (const x of cands) {
-    const ts = sim(t, x.trackName);
-    const as = a ? artistSim(a, x.artistName) : 0.8;
+    const ts = Math.max(sim(t, x.trackName), sim(t, stripArtistPrefix(x.trackName, a)));
+    const as = a ? Math.max(artistSim(a, x.artistName), artistSim(artist, x.artistName)) : 0.8;
     if (ts < 0.85 || as < 0.75) continue;
-    let score = ts + as + (x.syncedLyrics ? 0.3 : 0);
+    let score = ts + as + (x.syncedLyrics ? 1 : 0);
     if (duration && x.duration) {
       const d = Math.abs(duration - x.duration);
       if (d > 15) continue;
@@ -72,18 +186,30 @@ async function lyricsInner({ title, artist, album, duration }) {
     }
     if (score > bestScore) { best = x; bestScore = score; }
   }
-  return best ? pack(best) : null;
+  if (best && (best.syncedLyrics || !fallback)) return pack(best);
+  if (fallback) return pack(fallback);
+  // Последний шанс — Genius (текст без таймингов)
+  const g = await geniusFind(t, artist || a);
+  if (g) {
+    const text = g.instrumental ? null : await geniusLyrics(g.url);
+    if (text) return { synced: null, plain: text, instrumental: false, source: 'Genius' };
+    if (g.instrumental) return { synced: null, plain: null, instrumental: true, source: 'Genius' };
+  }
+  return null;
 }
 
 // Ручной поиск текста: список вариантов
 async function lyricsSearch(query) {
   const q = String(query || '').trim();
   if (!q) return [];
-  const list = await getJson('https://lrclib.net/api/search?' + new URLSearchParams({ q }));
-  return (Array.isArray(list) ? list : []).filter((x) => x.syncedLyrics || x.plainLyrics).slice(0, 25).map((x) => ({
+  const [list, gen] = await Promise.all([getJson('https://lrclib.net/api/search?' + new URLSearchParams({ q })), geniusSearch(q)]);
+  const lr = (Array.isArray(list) ? list : []).filter((x) => x.syncedLyrics || x.plainLyrics).slice(0, 25).map((x) => ({
     id: x.id, title: x.trackName, artist: x.artistName, album: x.albumName, duration: x.duration,
-    synced: x.syncedLyrics || null, plain: x.plainLyrics || null,
+    synced: x.syncedLyrics || null, plain: x.plainLyrics || null, source: 'LRCLIB',
   }));
+  lr.sort((x, y) => (y.synced ? 1 : 0) - (x.synced ? 1 : 0));
+  const gr = gen.filter((x) => !x.instrumental).slice(0, 8).map((x) => ({ id: 'g' + x.id, title: x.title, artist: x.artist, geniusUrl: x.url, source: 'Genius' }));
+  return [...lr, ...gr];
 }
 
 function pack(r) {
@@ -133,11 +259,11 @@ const COVER_OK = { title: 0.82, artist: 0.8 };
 async function fetchImage(url) {
   try {
     const res = await net.fetch(url, { headers: { 'User-Agent': UA } });
-    if (!res.ok) return null;
+    if (!res.ok) { if (res.status >= 500 || res.status === 429) netErrors++; return null; }
     const buf = Buffer.from(await res.arrayBuffer());
     if (buf.length < 1500) return null;
     return { buf, format: res.headers.get('content-type') || 'image/jpeg' };
-  } catch { return null; }
+  } catch { netErrors++; return null; }
 }
 
 // Кандидаты на обложку из Deezer
@@ -155,8 +281,8 @@ async function deezerAlbums(q, limit = 10) {
     image: x.cover_xl || x.cover_big, thumb: x.cover_medium, source: 'Deezer',
   }));
 }
-async function itunes(q, entity = 'song', limit = 10) {
-  const r = await getJson(`https://itunes.apple.com/search?media=music&entity=${entity}&limit=${limit}&term=${encodeURIComponent(q)}`);
+async function itunes(q, entity = 'song', limit = 10, country = '') {
+  const r = await getJson(`https://itunes.apple.com/search?media=music&entity=${entity}&limit=${limit}${country ? '&country=' + country : ''}&term=${encodeURIComponent(q)}`);
   return (r && r.results || []).filter((x) => x.artworkUrl100).map((x) => ({
     title: entity === 'album' ? x.collectionName : x.trackName, album: x.collectionName, artist: x.artistName,
     duration: x.trackTimeMillis ? x.trackTimeMillis / 1000 : 0,
@@ -217,7 +343,10 @@ async function findCoverInner({ artist, album, title, duration }) {
   if (title) {
     attempts.push(async () => pickBest(await deezerTracks(`artist:"${artist}" track:"${title}"`), want, false));
     attempts.push(async () => pickBest(await deezerTracks(`${artist} ${title}`), want, false));
+    attempts.push(async () => pickBest(await yandexTracks(`${artist} ${title}`), want, false));
     attempts.push(async () => pickBest(await itunes(`${artist} ${title}`), want, false));
+    attempts.push(async () => pickBest(await itunes(`${artist} ${title}`, 'song', 10, 'RU'), want, false));
+    attempts.push(async () => pickBest(await geniusSearch(`${artist} ${title}`), { ...want, duration: 0 }, false));
   }
   if (album) attempts.push(async () => pickBest(await itunes(`${artist} ${album}`, 'album'), want, true));
   attempts.push(async () => pickBest(await musicbrainz(want), want, !!album && album !== title));
@@ -235,9 +364,9 @@ async function findCoverInner({ artist, album, title, duration }) {
 async function coverSearch(query) {
   const q = String(query || '').trim();
   if (!q) return [];
-  const [a, b, c] = await Promise.all([deezerTracks(q, 12), deezerAlbums(q, 8), itunes(q, 'song', 10)]);
+  const [a, b, c, y, g] = await Promise.all([deezerTracks(q, 12), deezerAlbums(q, 8), itunes(q, 'song', 10), yandexTracks(q, 10), geniusSearch(q)]);
   const seen = new Set();
-  return [...b, ...a, ...c].filter((x) => x.image && !seen.has(x.image) && seen.add(x.image)).slice(0, 30);
+  return [...y, ...b, ...a, ...c, ...g].filter((x) => x.image && !seen.has(x.image) && seen.add(x.image)).slice(0, 30);
 }
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -319,4 +448,4 @@ async function radioClick(id) {
   if (radioHost && id) getJson(`https://${radioHost}/json/url/${id}`, 5000);
 }
 
-module.exports = { lyrics, lyricsSearch, CoverQueue, findCover, coverSearch, fetchImage, radioSearch, radioClick, sim, artistSim };
+module.exports = { lyrics, lyricsSearch, geniusLyrics, parseGeniusLyrics, CoverQueue, findCover, coverSearch, fetchImage, radioSearch, radioClick, sim, artistSim };

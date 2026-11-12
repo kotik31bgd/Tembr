@@ -74,7 +74,7 @@ function allowCorsForMedia() {
 // ---------- Окна ----------
 function themeColors() {
   const dark = lib.data.settings.theme !== 'light';
-  return { bg: dark ? '#0f0f14' : '#f4f4f8', symbol: dark ? '#e8e8f0' : '#202030' };
+  return { bg: dark ? '#0b0b0c' : '#e9e6f3', symbol: dark ? '#e8e8ea' : '#202030' };
 }
 
 function createMainWindow() {
@@ -308,6 +308,7 @@ function setupIpc() {
     return r;
   });
   ipcMain.handle('lyrics:search', (_e, q) => online.lyricsSearch(q));
+  ipcMain.handle('lyrics:genius', (_e, url) => online.geniusLyrics(url));
   // Сохранить текст для конкретного трека (из поиска или вставленный вручную); null — убрать
   ipcMain.handle('lyrics:set', (_e, id, data) => {
     if (data && (data.synced || data.plain)) lib.data.lyricsOverride[id] = { synced: data.synced || null, plain: data.plain || null, source: data.source || 'вручную' };

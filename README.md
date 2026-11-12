@@ -3,6 +3,7 @@
 Музыкальный плеер для Windows.
 
 ![Tembr](screenshot.png)
+![Tembr — тёмная тема](screenshot-dark.png)
 
 ## Скачать
 

@@ -543,7 +543,6 @@ function updateNowPlaying() {
   $('#np-artist').innerHTML = artistHtml;
   setCoverEl($('#now-cover'), coverUrl, fb, contain);
   setCoverEl($('#np-cover'), coverUrl, fb, contain);
-  setCoverEl($('#side-cover'), coverUrl, fb, contain);
   const isTrack = c?.kind === 'track';
   const liked = isTrack && isLiked(c.id);
   for (const b of [like, npLike]) {
@@ -591,7 +590,6 @@ function updateControls() {
   $('#btn-panel').classList.toggle('active', !!S.panel);
   $('#btn-eq').classList.toggle('active', !!S.settings.eq.enabled);
   if ('mediaSession' in navigator) navigator.mediaSession.playbackState = playing ? 'playing' : 'paused';
-  Viz.toggle(playing);
 }
 
 let seeking = false;
@@ -611,60 +609,6 @@ function updateProgress() {
   }
 }
 
-// Визуализатор в боковом меню (по реальному звуку через Web Audio)
-const Viz = {
-  raf: 0,
-  data: null,
-  toggle(on) {
-    if (on && !this.raf) this.raf = requestAnimationFrame(() => this.draw());
-    if (!on && this.raf) { cancelAnimationFrame(this.raf); this.raf = 0; this.drawIdle(); }
-  },
-  colors() {
-    const cs = getComputedStyle(document.documentElement);
-    return { a: cs.getPropertyValue('--accent').trim() || '#5b6cff', b: cs.getPropertyValue('--text-3').trim() || '#999' };
-  },
-  bars(levels, color) {
-    const cv = $('#viz');
-    const w = cv.clientWidth, h = cv.clientHeight;
-    if (cv.width !== w * 2) { cv.width = w * 2; cv.height = h * 2; }
-    const g = cv.getContext('2d');
-    g.setTransform(2, 0, 0, 2, 0, 0);
-    g.clearRect(0, 0, w, h);
-    const n = levels.length, gap = 3, bw = Math.max(2, (w - gap * (n - 1)) / n);
-    g.fillStyle = color;
-    levels.forEach((v, i) => {
-      const bh = Math.max(3, v * (h - 4));
-      const x = i * (bw + gap), y = (h - bh) / 2;
-      g.beginPath();
-      g.roundRect(x, y, bw, bh, bw / 2);
-      g.fill();
-    });
-  },
-  drawIdle() {
-    const n = 16;
-    this.bars(Array.from({ length: n }, (_, i) => 0.22 + 0.22 * Math.abs(Math.sin(i * 1.7))), this.colors().b);
-  },
-  draw() {
-    this.raf = requestAnimationFrame(() => this.draw());
-    const an = Player.analyser;
-    const n = 16;
-    let levels;
-    if (an) {
-      this.data ||= new Uint8Array(an.frequencyBinCount);
-      an.getByteFrequencyData(this.data);
-      levels = Array.from({ length: n }, (_, i) => {
-        const from = Math.floor(Math.pow(i / n, 1.6) * this.data.length * 0.7);
-        const to = Math.max(from + 1, Math.floor(Math.pow((i + 1) / n, 1.6) * this.data.length * 0.7));
-        let sum = 0; for (let k = from; k < to; k++) sum += this.data[k];
-        return Math.max(0.12, Math.min(1, sum / (to - from) / 200));
-      });
-    } else {
-      const t = performance.now() / 300;
-      levels = Array.from({ length: n }, (_, i) => 0.3 + 0.3 * Math.abs(Math.sin(t + i)));
-    }
-    this.bars(levels, this.colors().a);
-  },
-};
 
 function setSlider(el, frac) {
   const p = clamp(frac, 0, 1) * 100 + '%';
@@ -773,7 +717,7 @@ class TrackList {
       const ak = albumKey(t);
       html += `<div class="trow${cls}" data-i="${i}" draggable="true" style="top:${i * ROW}px">
         <div class="c-num"><span class="n">${num}</span>${icon('play', 'pl')}<span class="bars"><span></span><span></span><span></span></span></div>
-        <div class="c-title"><div class="cv" style="${bg(t.cover)}">${t.cover ? '' : icon('music')}</div><div class="meta"><span class="t ell" title="${esc(t.title)}">${esc(t.title)}</span></div></div>
+        <div class="c-title"><div class="cv${t.cover ? '' : ' nocover'}" style="${bg(t.cover)}" ${t.cover ? '' : 'title="Найти обложку"'}>${t.cover ? '' : icon('music')}</div><div class="meta"><span class="t ell" title="${esc(t.title)}">${esc(t.title)}</span></div></div>
         <div class="ell"><span class="link" data-artist="${esc(primaryArtist(t).toLowerCase())}">${esc(artistOf(t))}</span></div>
         <div class="c-album ell">${ak ? `<span class="link" data-album="${esc(ak)}">${esc(t.album)}</span>` : '<span style="color:var(--text-3)">—</span>'}</div>
         <div class="c-like"><button class="${liked ? 'on' : ''}" data-like title="${liked ? 'Убрать из любимых' : 'В любимые'}">${icon(liked ? 'heartFill' : 'heart')}</button></div>
@@ -814,6 +758,7 @@ class TrackList {
       const hit = this.idAt(e.target);
       if (!hit) return;
       if (e.target.closest('[data-like]')) return toggleLike(hit.id);
+      if (e.target.closest('.cv.nocover')) { const tt = S.tracks.get(hit.id); return coverPicker([hit.id], `${primaryArtist(tt)} ${tt.title}`, tt.title); }
       if (e.target.closest('.link')) return;
       if (e.target.closest('.c-num .pl')) return this.play(hit.i);
       if (e.shiftKey && S.lastSel >= 0) {
@@ -1942,7 +1887,16 @@ const Lyrics = {
       return;
     }
     if (data.plain) {
-      body.innerHTML = `<div class="lyrics plain">${esc(data.plain)}</div>${src}`;
+      const dur = isFinite(audio.duration) && audio.duration > 0 ? audio.duration : t.duration;
+      if (S.settings.approxLyrics !== false && dur > 20) {
+        this.lines = this.approximate(data.plain, dur);
+        const srcA = src.replace('</div>', '<span>· подсветка примерная</span><button data-ly="approx-off">Без подсветки</button></div>');
+        body.innerHTML = `<div class="lyrics approx">${this.lines.map((l, i) => `<div class="line${l.gap ? ' gap' : ''}${l.tag ? ' tag' : ''}" data-i="${i}">${esc(l.text)}</div>`).join('')}</div>${srcA}`;
+        this.tick(true);
+        return;
+      }
+      const srcP = src.replace('</div>', '<button data-ly="approx-on">Подсвечивать строки</button></div>');
+      body.innerHTML = `<div class="lyrics plain">${esc(data.plain)}</div>${srcP}`;
       return;
     }
     body.innerHTML = `<div class="panel-empty">${icon('lyrics')}<b>Текст не найден</b><br/><small style="color:var(--text-3)">В открытой базе LRCLIB нет этой песни. Можно поискать по-другому или вставить текст самому — он сохранится.</small>
@@ -1951,6 +1905,25 @@ const Lyrics = {
         <button class="btn" data-ly="paste">${icon('paste')}Вставить текст</button>
         <button class="btn" data-ly="web">${icon('web')}Искать в интернете</button>
       </div></div>`;
+  },
+
+  // Текст без таймингов: раскладываем строки по длительности трека пропорционально их длине
+  approximate(text, dur) {
+    const raw = text.split(/\r?\n/);
+    const lines = [];
+    let gap = false;
+    for (const r of raw) {
+      const l = r.trim();
+      if (!l) { gap = lines.length > 0; continue; }
+      const tag = /^\[.*\]$/.test(l);
+      lines.push({ text: l, gap, tag, w: tag ? 2 : l.length + 12 });
+      gap = false;
+    }
+    const start = Math.min(dur * 0.06, 12), end = dur * 0.96;
+    const total = lines.reduce((s, l) => s + l.w, 0) || 1;
+    let acc = 0;
+    for (const l of lines) { l.t = start + (end - start) * (acc / total); acc += l.w; }
+    return lines;
   },
 
   tick(force) {
@@ -1973,7 +1946,7 @@ const Lyrics = {
 
   searchModal(t) {
     const q0 = `${primaryArtist(t) === UNKNOWN_ARTIST ? '' : primaryArtist(t)} ${t.title}`.trim();
-    modal(`<h2>Найти текст песни</h2><div class="hint">Поиск по базе LRCLIB. Попробуйте изменить запрос: только название, другое написание исполнителя, латиницу/кириллицу.</div>
+    modal(`<h2>Найти текст песни</h2><div class="hint">Поиск по LRCLIB (тексты с таймингами) и Genius. Попробуйте изменить запрос: только название, другое написание исполнителя, латиницу/кириллицу.</div>
       <div class="search-row"><input class="input" id="lq" value="${esc(q0)}" spellcheck="false"/><button class="btn primary" id="lgo">${icon('search')}Найти</button></div>
       <div class="ly-list" id="lres"></div>
       <div class="row"><button class="btn" data-close>Закрыть</button></div>`, (m, close) => {
@@ -1982,14 +1955,23 @@ const Lyrics = {
         const box = m.querySelector('#lres');
         box.innerHTML = '<div class="scan-status" style="padding:10px"><div class="spinner"></div>Ищу…</div>';
         results = await window.api.lyricsSearch(m.querySelector('#lq').value);
-        box.innerHTML = results.length ? results.map((r, i) => `<div class="ly-item" data-i="${i}"><div class="meta"><div class="t ell">${esc(r.title)}</div><div class="s ell">${esc([r.artist, r.album, r.duration ? fmtTime(r.duration) : ''].filter(Boolean).join(' · '))}</div></div><span class="badge">${r.synced ? 'синхр.' : 'текст'}</span></div>`).join('') : '<div class="panel-empty" style="padding:20px">Ничего не найдено. Попробуйте другой запрос или вставьте текст вручную.</div>';
+        box.innerHTML = results.length ? results.map((r, i) => `<div class="ly-item" data-i="${i}"><div class="meta"><div class="t ell">${esc(r.title)}</div><div class="s ell">${esc([r.artist, r.album, r.duration ? fmtTime(r.duration) : ''].filter(Boolean).join(' · '))}</div></div><span class="badge">${r.geniusUrl ? 'Genius' : r.synced ? 'синхр.' : 'текст'}</span></div>`).join('') : '<div class="panel-empty" style="padding:20px">Ничего не найдено. Попробуйте другой запрос или вставьте текст вручную.</div>';
       };
       m.querySelector('#lgo').addEventListener('click', run);
       m.querySelector('#lq').addEventListener('keydown', (e) => e.key === 'Enter' && run());
-      m.querySelector('#lres').addEventListener('click', (e) => {
+      m.querySelector('#lres').addEventListener('click', async (e) => {
         const it = e.target.closest('.ly-item');
         if (!it) return;
         const r = results[+it.dataset.i];
+        if (r.geniusUrl) {
+          it.style.opacity = '.5';
+          const text = await window.api.lyricsGenius(r.geniusUrl);
+          it.style.opacity = '';
+          if (!text) return toast('Не удалось загрузить текст с Genius');
+          close();
+          this.save(t, { plain: text, source: `Genius · ${r.artist} — ${r.title}` });
+          return toast('Текст сохранён для этого трека');
+        }
         close();
         this.save(t, { synced: r.synced, plain: r.plain, source: `LRCLIB · ${r.artist} — ${r.title}` });
         toast('Текст сохранён для этого трека');
@@ -2024,6 +2006,7 @@ $('#panel-body').addEventListener('click', (e) => {
     if (a === 'paste') return Lyrics.pasteModal(t);
     if (a === 'reset') return Lyrics.save(t, null);
     if (a === 'retry') return Lyrics.render();
+    if (a === 'approx-off' || a === 'approx-on') { setSetting({ approxLyrics: a === 'approx-on' }); return Lyrics.render(); }
     if (a === 'web') return window.api.openExternal('https://www.google.com/search?q=' + encodeURIComponent(`${artistOf(t)} ${t.title} текст песни`));
   }
   if (S.panel === 'similar') {
@@ -2058,16 +2041,18 @@ function coverSubmenu(ids, query) {
     { label: 'Убрать обложку', icon: 'trash', danger: true, action: () => window.api.coverReset(ids, false) },
   ];
 }
-function coverPicker(ids, query) {
+function coverPicker(ids, query, fallbackQuery) {
   modal(`<h2>Выбор обложки</h2><div class="hint">Найдите трек или альбом по названию и нажмите на подходящую обложку.</div>
     <div class="search-row"><input class="input" id="cq" value="${esc(query)}" spellcheck="false"/><button class="btn primary" id="cgo">${icon('search')}Найти</button></div>
     <div class="pick-grid" id="cres"></div>
     <div class="row"><button class="btn" data-close>Закрыть</button></div>`, (m, close) => {
     let results = [];
+    let first = true;
     const run = async () => {
       const box = m.querySelector('#cres');
       box.innerHTML = '<div class="scan-status"><div class="spinner"></div>Ищу…</div>';
       results = await window.api.coverSearch(m.querySelector('#cq').value);
+      if (!results.length && fallbackQuery && first) { first = false; m.querySelector('#cq').value = fallbackQuery; results = await window.api.coverSearch(fallbackQuery); }
       box.innerHTML = results.length ? results.map((r, i) => `<div class="pick" data-i="${i}" title="${esc(r.source)}"><img src="${esc(r.thumb || r.image)}" loading="lazy" referrerpolicy="no-referrer"/><div class="t ell">${esc(r.title)}</div><div class="s ell">${esc(r.artist || '')}</div></div>`).join('') : '<div class="panel-empty" style="grid-column:1/-1">Ничего не найдено. Попробуйте изменить запрос.</div>';
     };
     m.querySelector('#cgo').addEventListener('click', run);
@@ -2172,11 +2157,11 @@ $('#np-shuffle').addEventListener('click', () => Player.setShuffle(!S.settings.s
 $('#np-repeat').addEventListener('click', () => Player.cycleRepeat());
 $('#np-like').addEventListener('click', () => Player.current?.kind === 'track' && toggleLike(Player.current.id));
 $('#np-cover').addEventListener('click', () => $('#now-cover').click());
-$('#side-now').addEventListener('click', () => setPanel(S.panel ? null : S.panelTab || 'similar', false));
 bindSlider($('#np-seek'), (f) => { seeking = true; const d = audio.duration; if (isFinite(d)) $('#np-cur').textContent = fmtTime(f * d); }, (f) => { seeking = false; const d = audio.duration; if (isFinite(d)) Player.seek(f * d); });
 $('#btn-mute').addEventListener('click', () => { audio.muted = !audio.muted; updateVolume(); });
 $('#now-cover').addEventListener('click', () => {
   const c = Player.current;
+  if (c?.kind === 'track' && !c.track.cover) return coverPicker([c.id], `${primaryArtist(c.track)} ${c.track.title}`, c.track.title);
   if (c?.kind === 'track' && albumKey(c.track)) navigate({ name: 'album', key: albumKey(c.track) });
   else if (c?.kind === 'radio') navigate({ name: 'radio' });
 });
@@ -2354,7 +2339,6 @@ window.api.onUpdate(applyUpdate);
   S.panelTab = p0 && p0 !== 'closed' ? p0 : 'similar';
   S.panel = null;
   setPanel(p0 === 'closed' ? null : S.panelTab, false);
-  Viz.drawIdle();
   audio.volume = S.settings.volume ?? 0.8;
   updateVolume();
   renderNav();

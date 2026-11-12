@@ -17,6 +17,7 @@ contextBridge.exposeInMainWorld('api', {
   setSettings: (patch) => ipcRenderer.send('settings:set', patch),
   lyrics: (t) => ipcRenderer.invoke('lyrics:get', t),
   lyricsSearch: (q) => ipcRenderer.invoke('lyrics:search', q),
+  lyricsGenius: (url) => ipcRenderer.invoke('lyrics:genius', url),
   lyricsSet: (id, data) => ipcRenderer.invoke('lyrics:set', id, data),
   coverSearch: (q) => ipcRenderer.invoke('cover:search', q),
   coverApply: (ids, url) => ipcRenderer.invoke('cover:apply', ids, url),
