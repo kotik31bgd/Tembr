@@ -55,6 +55,8 @@ class Library extends EventEmitter {
       this.data.coverAlgo = 2;
     }
     this.data.lyricsOverride ||= {};
+    this.data.artistImages ||= {};
+    this.data.artistLookup ||= {};
     // v1.3: поиск текстов научился находить синхронные версии и Genius — перепроверим ненайденные и несинхронные
     if ((this.data.lyricsAlgo || 0) < 3) {
       for (const [k, v] of Object.entries(this.data.lyricsCache || {})) if (!v || v.none || !v.synced) delete this.data.lyricsCache[k];
@@ -313,6 +315,41 @@ class Library extends EventEmitter {
     }
     this._changed();
     return file;
+  }
+
+  // ---------- Фото исполнителей ----------
+  // Те же правила разделения, что и в интерфейсе: «A, B», «A & B», «A feat. B», «A x B»
+  artistNames() {
+    const sep = /\s*(?:,|;|&|\s(?:feat\.?|ft\.?|featuring|при уч\.)\s|\sx\s)\s*/i;
+    const out = new Map();
+    for (const t of Object.values(this.data.tracks)) {
+      for (const n of [...String(t.artist || '').split(sep), ...String(t.albumArtist || '').split(sep)]) {
+        const name = n.trim();
+        if (!name) continue;
+        if (!out.has(name.toLowerCase())) out.set(name.toLowerCase(), { name, titles: [] });
+        const e = out.get(name.toLowerCase());
+        if (t.title && !e.titles.includes(t.title)) e.titles.push(t.title);
+      }
+    }
+    return out;
+  }
+
+  setArtistImage(key, buf, format, source) {
+    const prev = this.data.artistImages[key];
+    if (source === 'auto' && prev) return prev.file;
+    const file = this._saveCover(buf, format);
+    this.data.artistImages[key] = { file, source };
+    this.save();
+    this.emit('artists');
+    return file;
+  }
+
+  resetArtistImage(key, auto) {
+    delete this.data.artistImages[key];
+    if (auto) delete this.data.artistLookup[key];
+    else this.data.artistLookup[key] = { none: true, at: Date.now() + 100 * 365 * 24 * 3600 * 1000 }; // «без фото» навсегда
+    this.save();
+    this.emit('artists');
   }
 
   // Убрать обложку (auto=true — разрешить снова искать её автоматически)

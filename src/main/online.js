@@ -50,6 +50,7 @@ async function geniusSearch(q) {
         id: x.id, title: x.title, artist: x.artist_names || (x.primary_artist && x.primary_artist.name) || '',
         url: x.url, image: x.song_art_image_url || x.header_image_url, thumb: x.song_art_image_thumbnail_url || x.song_art_image_url,
         instrumental: !!x.instrumental, source: 'Genius',
+        artists: [x.primary_artist, ...(x.featured_artists || [])].filter((a) => a && a.image_url && !/default_avatar/.test(a.image_url)).map((a) => ({ name: a.name, image: a.image_url })),
       });
     }
   }
@@ -122,6 +123,7 @@ async function yandexTracks(q, limit = 10) {
     return {
       title: x.title, artist: (x.artists || []).map((a) => a.name).join(', '), album: alb.title, duration: (x.durationMs || 0) / 1000,
       image: uri ? 'https://' + uri.replace('%%', '600x600') : null, thumb: uri ? 'https://' + uri.replace('%%', '200x200') : null, source: 'Яндекс Музыка',
+      artists: (x.artists || []).filter((a) => a.cover && a.cover.uri).map((a) => ({ name: a.name, image: 'https://' + a.cover.uri.replace('%%', '600x600') })),
     };
   }).filter((x) => x.image);
 }
@@ -279,6 +281,7 @@ async function deezerTracks(q, limit = 10) {
   return (r && r.data || []).map((x) => ({
     title: x.title, artist: x.artist && x.artist.name, album: x.album && x.album.title, duration: x.duration,
     image: x.album && (x.album.cover_xl || x.album.cover_big), thumb: x.album && x.album.cover_medium, source: 'Deezer',
+    artists: x.artist && x.artist.picture_xl && !x.artist.picture_xl.includes('d41d8cd98f00b204e9800998ecf8427e') ? [{ name: x.artist.name, image: x.artist.picture_xl }] : [],
   }));
 }
 async function deezerAlbums(q, limit = 10) {
@@ -376,6 +379,58 @@ async function coverSearch(query) {
   return [...y, ...b, ...a, ...c, ...g].filter((x) => x.image && !seen.has(x.image) && seen.add(x.image)).slice(0, 30);
 }
 
+// ---------- Фото исполнителей ----------
+const DEEZER_EMPTY = 'd41d8cd98f00b204e9800998ecf8427e'; // так Deezer помечает «нет фото»
+async function deezerArtists(q, limit = 10) {
+  const r = await getJson(`https://api.deezer.com/search/artist?limit=${limit}&q=${encodeURIComponent(q)}`);
+  return (r && r.data || []).filter((x) => x.picture_xl && !x.picture_xl.includes(DEEZER_EMPTY)).map((x) => ({
+    title: x.name, artist: x.name, sub: x.nb_fan ? `${x.nb_fan.toLocaleString('ru')} поклонников` : '', image: x.picture_xl, thumb: x.picture_medium, source: 'Deezer',
+  }));
+}
+async function yandexArtists(q, limit = 10) {
+  const r = await getJson('https://api.music.yandex.net/search?type=artist&page=0&text=' + encodeURIComponent(q));
+  const items = (r && r.result && r.result.artists && r.result.artists.results) || [];
+  return items.slice(0, limit).map((x) => {
+    const uri = (x.cover && x.cover.uri) || x.ogImage;
+    return { title: x.name, artist: x.name, sub: (x.genres || []).slice(0, 2).join(', '), image: uri ? 'https://' + uri.replace('%%', '600x600') : null, thumb: uri ? 'https://' + uri.replace('%%', '200x200') : null, source: 'Яндекс Музыка' };
+  }).filter((x) => x.image);
+}
+async function geniusArtists(q) {
+  const r = await getJson('https://genius.com/api/search/multi?per_page=5&q=' + encodeURIComponent(q));
+  const out = [];
+  for (const sec of (r && r.response && r.response.sections) || []) {
+    for (const h of sec.hits || []) {
+      const x = h.result;
+      if (h.type === 'artist' && x && x.image_url && !/default_avatar/.test(x.image_url)) out.push({ title: x.name, artist: x.name, image: x.image_url, thumb: x.image_url, source: 'Genius' });
+    }
+  }
+  return out;
+}
+async function artistImageSearch(query) {
+  const q = String(query || '').trim();
+  if (!q) return [];
+  const [y, d, g] = await Promise.all([yandexArtists(q), deezerArtists(q), geniusArtists(q)]);
+  const seen = new Set();
+  return [...y, ...d, ...g].filter((x) => !seen.has(x.image) && seen.add(x.image)).slice(0, 30);
+}
+// Автоматически — только если у найденного исполнителя есть трек из библиотеки (иначе легко взять тёзку)
+async function findArtistImage(name, titles = []) {
+  const before = netErrors;
+  for (const title of titles.slice(0, 3)) {
+    for (const src of [deezerTracks, yandexTracks, geniusSearch]) {
+      const list = await src(`${name} ${title}`);
+      for (const c of list) {
+        if (sim(title, c.title) < 0.85) continue;
+        const a = (c.artists || []).find((x) => sim(name, x.name) >= 0.95);
+        if (!a) continue;
+        const img = await fetchImage(a.image);
+        if (img) return img;
+      }
+    }
+  }
+  return netErrors > before ? { retry: true } : null;
+}
+
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // Фоновая очередь поиска обложек
@@ -411,6 +466,21 @@ class CoverQueue {
         } else {
           lookup[key] = { none: true, at: Date.now() };
         }
+        this.lib.save();
+        await sleep(700);
+      }
+      // Фото исполнителей
+      const alookup = this.lib.data.artistLookup;
+      for (const [key, { name, titles }] of this.lib.artistNames()) {
+        if (!this.lib.data.settings.autoCovers) break;
+        if (this.lib.data.artistImages[key]) continue;
+        const prev = alookup[key];
+        if (prev && prev.none && Date.now() - prev.at < WEEK) continue;
+        if (name === 'Неизвестный исполнитель') continue;
+        const res = await findArtistImage(name, titles);
+        if (res && res.retry) { await sleep(700); continue; }
+        if (res) { this.lib.setArtistImage(key, res.buf, res.format, 'auto'); delete alookup[key]; }
+        else alookup[key] = { none: true, at: Date.now() };
         this.lib.save();
         await sleep(700);
       }
@@ -455,4 +525,4 @@ async function radioClick(id) {
   if (radioHost && id) getJson(`https://${radioHost}/json/url/${id}`, 5000);
 }
 
-module.exports = { lyrics, lyricsSearch, geniusLyrics, parseGeniusLyrics, CoverQueue, findCover, coverSearch, fetchImage, radioSearch, radioClick, sim, artistSim };
+module.exports = { artistImageSearch, findArtistImage, lyrics, lyricsSearch, geniusLyrics, parseGeniusLyrics, CoverQueue, findCover, coverSearch, fetchImage, radioSearch, radioClick, sim, artistSim };

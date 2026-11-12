@@ -82,6 +82,7 @@ const S = {
   playlists: [],
   stats: {},
   radioFavs: [],
+  artistImages: {},
   settings: {},
   dataDir: '',
   version: '',
@@ -120,6 +121,11 @@ function index() {
       ar.ids.push(t.id);
       if (!ar.cover && t.cover) ar.cover = t.cover;
     }
+  }
+  for (const ar of artists.values()) {
+    const img = S.artistImages[ar.key];
+    ar.photo = img ? img.file : null;
+    if (ar.photo) ar.cover = ar.photo;
   }
   S.idx = { albums, artists };
   return S.idx;
@@ -1190,6 +1196,7 @@ function bindCards(el, items) {
     const c = e.target.closest('.card');
     if (!c) return;
     const it = items[+c.dataset.i];
+    if (it.menu) { e.preventDefault(); return it.menu(e.clientX, e.clientY); }
     const ids = it.ids && it.ids();
     if (!ids || !ids.length) return;
     e.preventDefault();
@@ -1211,6 +1218,7 @@ const albumItem = (a) => ({
 const artistItem = (a) => ({
   title: a.name, sub: tracksWord(a.ids.length), cover: a.cover, icon: 'artist', round: true,
   open: () => navigate({ name: 'artist', key: a.key }), play: () => Player.playList(sortedTracks(a.ids, 'default'), 0), ids: () => sortedTracks(a.ids, 'default'),
+  menu: (x, y) => artistMenu(x, y, a),
 });
 const coversOf = (ids, n = 4) => [...new Set(ids.map((id) => S.tracks.get(id)?.cover).filter(Boolean))].slice(0, n);
 const topIds = () => Object.entries(S.stats).filter(([id, s]) => s.plays > 0 && S.tracks.has(id)).sort((a, b) => b[1].plays - a[1].plays || b[1].last - a[1].last).slice(0, 100).map(([id]) => id);
@@ -1418,8 +1426,12 @@ const VIEWS = {
     if (!ar) return (view.innerHTML = '<div class="empty"><h2>Исполнитель не найден</h2></div>');
     const ids = sortedTracks(ar.ids, 'default');
     const albums = Array.from(index().albums.values()).filter((a) => a.ids.some((id) => ar.ids.includes(id))).sort((a, b) => (b.year || 0) - (a.year || 0));
-    view.insertAdjacentHTML('beforeend', head({ kicker: 'Исполнитель', title: ar.name, art: ar.cover, artClass: 'round', artIcon: 'artist', banner: ar.cover || 'grad-6', sub: `${summary(ids)}${albums.length ? ' · ' + plural(albums.length, 'альбом', 'альбома', 'альбомов') : ''}`, actions: playActions('', true) }));
+    view.insertAdjacentHTML('beforeend', head({ kicker: 'Исполнитель', title: ar.name, art: ar.cover, artClass: 'round', artIcon: 'artist', banner: ar.cover || 'grad-6', editable: true, sub: `${summary(ids)}${albums.length ? ' · ' + plural(albums.length, 'альбом', 'альбома', 'альбомов') : ''}`, actions: playActions('', true) }));
     bindPlayActions(view, ids);
+    view.querySelector('.view-head .art.editable')?.addEventListener('click', (e) => {
+      const r = e.currentTarget.getBoundingClientRect();
+      artistMenu(r.left + 20, r.bottom - 10, ar);
+    });
     if (albums.length) rowSection(view, 'Альбомы', albums.map(albumItem));
     view.insertAdjacentHTML('beforeend', '<div class="section-title">Все треки</div>');
     currentList = new TrackList(view, ids);
@@ -1520,21 +1532,49 @@ function artistGrid(artists) {
     if (e.target.closest('[data-play]')) return Player.playList(sortedTracks(index().artists.get(c.dataset.key).ids, 'default'), 0);
     navigate({ name: 'artist', key: c.dataset.key });
   });
+  g.addEventListener('contextmenu', (e) => {
+    const c = e.target.closest('.card');
+    if (!c) return;
+    e.preventDefault();
+    artistMenu(e.clientX, e.clientY, index().artists.get(c.dataset.key));
+  });
   return g;
 }
 
 // ---------- Поиск ----------
+// Поиск на разных языках: «aromat» найдёт «аромат» и наоборот,
+// а также текст, набранный не в той раскладке («фкщьфе» → «aromat», «ltdjxrf» → «девочка»)
+const TRANSLIT = { а: 'a', б: 'b', в: 'v', г: 'g', д: 'd', е: 'e', ё: 'e', ж: 'zh', з: 'z', и: 'i', й: 'y', к: 'k', л: 'l', м: 'm', н: 'n', о: 'o', п: 'p', р: 'r', с: 's', т: 't', у: 'u', ф: 'f', х: 'h', ц: 'ts', ч: 'ch', ш: 'sh', щ: 'sch', ъ: '', ы: 'y', ь: '', э: 'e', ю: 'yu', я: 'ya', і: 'i', ї: 'i', є: 'e', ґ: 'g', ў: 'u' };
+const EN = "qwertyuiop[]asdfghjkl;'zxcvbnm,.`";
+const RU = 'йцукенгшщзхъфывапролджэячсмитьбюё';
+const LAYOUT = {};
+for (let i = 0; i < EN.length; i++) { LAYOUT[EN[i]] = RU[i]; LAYOUT[RU[i]] = EN[i]; }
+const translitStr = (s) => s.replace(/[а-яёіїєґў]/g, (c) => TRANSLIT[c] ?? c);
+// приводим к единой «латинской» форме: транслит кириллицы, без диакритики (é → e), c/k, h/kh, y/i/j, w/v
+function foldText(s) {
+  return translitStr(String(s || '').toLowerCase().replace(/ё/g, 'е'))
+    .normalize('NFKD').replace(/[\u0300-\u036f]/g, '')
+    .replace(/c/g, 'k').replace(/kh/g, 'h').replace(/[yj]/g, 'i').replace(/w/g, 'v').replace(/[^\p{L}\p{N}]+/gu, ' ');
+}
+const swapLayout = (w) => [...w].map((c) => LAYOUT[c] ?? c).join('');
+function searchMatcher(query) {
+  const words = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
+  const variants = words.map((w) => [...new Set([w, swapLayout(w)].map((x) => foldText(x).trim()).filter(Boolean))]);
+  return (raw) => {
+    const low = raw.toLowerCase();
+    const hay = foldText(raw);
+    return words.every((w, i) => low.includes(w) || variants[i].some((v) => hay.includes(v)));
+  };
+}
+
 function renderSearch(view) {
-  const q = S.search.trim().toLowerCase();
-  const words = q.split(/\s+/);
-  const match = (s) => words.every((w) => s.includes(w));
+  const match = searchMatcher(S.search);
   const ids = [];
   for (const t of S.tracks.values()) {
-    const hay = `${t.title} ${t.artist} ${t.album} ${t.albumArtist} ${t.genre}`.toLowerCase();
-    if (match(hay)) ids.push(t.id);
+    if (match(`${t.title} ${t.artist} ${t.album} ${t.albumArtist} ${t.genre}`)) ids.push(t.id);
   }
-  const albums = Array.from(index().albums.values()).filter((a) => match(`${a.name} ${a.artist}`.toLowerCase())).slice(0, 12);
-  const artists = Array.from(index().artists.values()).filter((a) => match(a.name.toLowerCase())).slice(0, 12);
+  const albums = Array.from(index().albums.values()).filter((a) => match(`${a.name} ${a.artist}`)).slice(0, 12);
+  const artists = Array.from(index().artists.values()).filter((a) => match(a.name)).slice(0, 12);
   view.insertAdjacentHTML('beforeend', head({ kicker: 'Поиск', title: `«${S.search.trim()}»`, art: false, compact: true, sub: ids.length || albums.length || artists.length ? `Найдено: ${tracksWord(ids.length)}` : 'Ничего не найдено', actions: ids.length ? playActions() : '' }));
   const sorted = sortedTracks(ids, 'default');
   bindPlayActions(view, sorted);
@@ -2079,6 +2119,42 @@ function coverSubmenu(ids, query) {
     { label: 'Убрать обложку', icon: 'trash', danger: true, action: () => window.api.coverReset(ids, false) },
   ];
 }
+function artistMenu(x, y, ar) {
+  if (!ar) return;
+  openMenu(x, y, [
+    { label: 'Слушать', icon: 'play', action: () => Player.playList(sortedTracks(ar.ids, 'default'), 0) },
+    { label: 'Открыть страницу', icon: 'artist', action: () => navigate({ name: 'artist', key: ar.key }) },
+    '-',
+    { label: 'Найти фото в интернете…', icon: 'search', action: () => artistPicker(ar) },
+    { label: 'Выбрать фото с компьютера…', icon: 'image', action: async () => { if (await window.api.artistFile(ar.key)) toast('Фото обновлено'); } },
+    { label: 'Найти автоматически заново', icon: 'refresh', action: async () => { await window.api.artistReset(ar.key, true); toast('Ищу фото…'); } },
+    ...(ar.photo ? [{ label: 'Убрать фото', icon: 'trash', danger: true, action: () => window.api.artistReset(ar.key, false) }] : []),
+  ]);
+}
+function artistPicker(ar) {
+  modal(`<h2>Фото исполнителя</h2><div class="hint">Найдите исполнителя по имени и нажмите на подходящее фото.</div>
+    <div class="search-row"><input class="input" id="aq" value="${esc(ar.name)}" spellcheck="false"/><button class="btn primary" id="ago">${icon('search')}Найти</button></div>
+    <div class="pick-grid round" id="ares"></div>
+    <div class="row"><button class="btn" data-close>Закрыть</button></div>`, (m, close) => {
+    let results = [];
+    const run = async () => {
+      const box = m.querySelector('#ares');
+      box.innerHTML = '<div class="scan-status"><div class="spinner"></div>Ищу…</div>';
+      results = await window.api.artistSearch(m.querySelector('#aq').value);
+      box.innerHTML = results.length ? results.map((r, i) => `<div class="pick" data-i="${i}" title="${esc(r.source)}"><img src="${esc(r.thumb || r.image)}" loading="lazy" referrerpolicy="no-referrer"/><div class="t ell">${esc(r.title)}</div><div class="s ell">${esc(r.sub || r.source)}</div></div>`).join('') : '<div class="panel-empty" style="grid-column:1/-1">Ничего не найдено. Попробуйте другое написание имени.</div>';
+    };
+    m.querySelector('#ago').addEventListener('click', run);
+    m.querySelector('#aq').addEventListener('keydown', (e) => e.key === 'Enter' && run());
+    m.querySelector('#ares').addEventListener('click', async (e) => {
+      const it = e.target.closest('.pick');
+      if (!it) return;
+      it.style.opacity = '.5';
+      const ok = await window.api.artistApply(ar.key, results[+it.dataset.i].image);
+      if (ok) { close(); toast('Фото обновлено'); } else { it.style.opacity = ''; toast('Не удалось скачать фото'); }
+    });
+    run();
+  });
+}
 function coverPicker(ids, query, fallbackQuery) {
   modal(`<h2>Выбор обложки</h2><div class="hint">Найдите трек или альбом по названию и нажмите на подходящую обложку.</div>
     <div class="search-row"><input class="input" id="cq" value="${esc(query)}" spellcheck="false"/><button class="btn primary" id="cgo">${icon('search')}Найти</button></div>
@@ -2315,6 +2391,11 @@ async function refreshTracksNow() {
   render(true);
   renderNav();
 }
+window.api.onArtists((imgs) => {
+  S.artistImages = imgs || {};
+  S.idx = null;
+  if (['artist', 'artists', 'home', 'search'].includes(S.view.name) || S.search) render(true);
+});
 window.api.onProgress((p) => {
   S.progress = p;
   const el = $('#scan-status');
@@ -2364,6 +2445,7 @@ window.api.onUpdate(applyUpdate);
   S.playlists = d.playlists || [];
   S.stats = d.stats || {};
   S.radioFavs = d.radioFavs || [];
+  S.artistImages = d.artistImages || {};
   S.settings = d.settings;
   S.dataDir = d.dataDir;
   S.version = d.version;

@@ -507,3 +507,5 @@ kbd { font-family: inherit; font-size: 12px; background: var(--glass-2); border:
 .lyrics.approx .line.active { transform: scale(1.02); }
 .c-title .cv.nocover { cursor: pointer; }
 .c-title .cv.nocover:hover { color: var(--accent); background-color: var(--accent-soft); }
+.pick-grid.round .pick img { border-radius: 50%; }
+.pick-grid.round .pick { text-align: center; }

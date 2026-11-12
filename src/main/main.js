@@ -244,6 +244,7 @@ function setupIpc() {
     playlists: lib.data.playlists,
     stats: lib.data.stats,
     radioFavs: lib.data.radioFavs,
+    artistImages: lib.data.artistImages,
     settings: lib.data.settings,
     dataDir: lib.dataDir,
     platform: process.platform,
@@ -330,6 +331,25 @@ function setupIpc() {
     if (r.canceled || !r.filePaths[0]) return false;
     const buf = await fs.promises.readFile(r.filePaths[0]);
     lib.setTrackCover(ids, buf, path.extname(r.filePaths[0]), 'manual');
+    return true;
+  });
+  // ---------- Фото исполнителей ----------
+  ipcMain.handle('artist:search', (_e, q) => online.artistImageSearch(q));
+  ipcMain.handle('artist:apply', async (_e, key, url) => {
+    const img = /^https:/.test(url) ? await online.fetchImage(url) : null;
+    if (!img) return false;
+    lib.setArtistImage(key, img.buf, img.format, 'manual');
+    return true;
+  });
+  ipcMain.handle('artist:file', async (_e, key) => {
+    const r = await dialog.showOpenDialog(mainWin, { title: 'Выберите фото исполнителя', properties: ['openFile'], filters: [{ name: 'Изображения', extensions: ['jpg', 'jpeg', 'png', 'webp'] }] });
+    if (r.canceled || !r.filePaths[0]) return false;
+    lib.setArtistImage(key, await fs.promises.readFile(r.filePaths[0]), path.extname(r.filePaths[0]), 'manual');
+    return true;
+  });
+  ipcMain.handle('artist:reset', (_e, key, auto) => {
+    lib.resetArtistImage(key, !!auto);
+    if (auto) coverQueue.run();
     return true;
   });
   ipcMain.handle('cover:reset', (_e, ids, auto) => {
@@ -439,6 +459,7 @@ app.whenReady().then(async () => {
   createTray();
 
   lib.on('tracks', () => broadcast('lib:tracks', lib.tracksList()));
+  lib.on('artists', () => broadcast('lib:artists', lib.data.artistImages));
   lib.on('progress', (p) => broadcast('lib:progress', p));
   lib.on('scanned', () => coverQueue.run());
 
